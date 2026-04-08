@@ -1,0 +1,44 @@
+llm:
+  provider: "github_models"   # anthropic / github_models / ollama
+  model: "gpt-4o"
+  model_final: "gpt-4o"
+  max_tokens: 4096
+  temperature: 0.3
+  api_key_env: "GITHUB_TOKEN"  # your GitHub Copilot Pro PAT
+  endpoint: "https://models.inference.ai.azure.com"
+  fallback: "ollama"           # ollama / none — auto-fallback when primary fails
+
+ollama:
+  model: "gemma3"              # best local model for financial analysis
+  endpoint: "http://localhost:11434/v1"
+  max_tokens: 4096
+  temperature: 0.3
+
+watchlist:
+  - "600711"  # 盛屯矿业
+  - "601012"  # 隆基绿能
+  - "603993"  # 洛阳钼业
+
+analysis:
+  lookback_days: 250
+  financial_quarters: 8
+  news_count: 20
+
+risk:
+  max_single_position_pct: 0.25
+  max_sector_pct: 0.40
+  max_drawdown_pct: 0.15
+  total_capital: 75103      # auto-calculated from portfolio.csv
+
+cache:
+  enabled: true
+  ttl_seconds: 900
+  directory: ".cache"
+
+compliance:
+  log_directory: "logs"
+
+output:
+  format: "markdown"
+  save_to_file: true
+  output_directory: "reports"

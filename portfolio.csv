@@ -1,0 +1,3 @@
+date,action,symbol,name,shares,price,commission,note
+2026-04-08,init_cash,,,,,,55351.10
+2026-04-08,buy,603993,洛阳钼业,1100,17.956,5.00,建仓
