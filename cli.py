@@ -13,7 +13,7 @@ from rich.table import Table
 
 from stock_agents.config.settings import load_settings
 from stock_agents.compliance.logger import ComplianceLogger
-from stock_agents.data.csv_portfolio import load_portfolio, record_trade, get_held_symbols, DEFAULT_CSV
+from stock_agents.data.csv_portfolio import load_portfolio, record_trade, get_held_symbols
 from stock_agents.orchestrator import TradingOrchestrator
 from stock_agents.output.copilot_plan import render_copilot_plan
 from stock_agents.output.formatters import print_decision, print_watchlist_summary
@@ -327,3 +327,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
+ python -m stock_agents.cli analyze 600711 2>&1
+"""

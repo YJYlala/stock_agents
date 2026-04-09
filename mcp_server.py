@@ -1,6 +1,5 @@
 """MCP server exposing stock_agents analysis tools."""
 
-from __future__ import annotations
 
 from stock_agents.config.settings import load_settings
 from stock_agents.data.futu_client import FutuClient

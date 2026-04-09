@@ -2,9 +2,8 @@
 
 import json
 import logging
-from datetime import datetime
 
-from stock_agents.agents.base import LLMClient
+from stock_agents.llm import LLMClient
 from stock_agents.config.prompts import FUND_MANAGER
 from stock_agents.data.data_manager import DataManager
 from stock_agents.models.signals import AgentReport, DebateReport, FinalDecision
@@ -104,10 +103,24 @@ class FundManager:
                 result = self._synthesize_from_reports(agent_reports, debate_report)
 
         if isinstance(result, dict):
-            # Calculate shares (round to lot size of 100)
-            pct = result.get("position_size_pct") or 0.0
-            position_value = portfolio.total_value * pct
-            shares = int(position_value / (snapshot.current_price + 0.01)) // 100 * 100
+            # Position size from LLM (may be 0 — use as-is, don't mask with `or`)
+            pct = result.get("position_size_pct")
+            if pct is None:
+                pct = 0.0
+            shares_from_llm = result.get("position_size_shares")
+
+            # Fallback: if LLM returned 0 but user holds shares, use current holding
+            if pct == 0.0 and shares_from_llm in (None, 0):
+                for pos in portfolio.positions:
+                    if pos.symbol == symbol:
+                        pct = pos.weight_pct / 100.0
+                        shares_from_llm = pos.shares
+                        break
+
+            # Calculate shares from pct if LLM didn't provide them
+            if not shares_from_llm and pct > 0:
+                position_value = portfolio.total_value * pct
+                shares_from_llm = int(position_value / (snapshot.current_price + 0.01)) // 100 * 100
 
             return FinalDecision(
                 symbol=symbol,
@@ -118,7 +131,7 @@ class FundManager:
                 target_price=result.get("target_price"),
                 stop_loss=result.get("stop_loss"),
                 position_size_pct=pct,
-                position_size_shares=result.get("position_size_shares") or shares,
+                position_size_shares=shares_from_llm or 0,
                 fundamental_score=result.get("fundamental_score") or 5.0,
                 technical_score=result.get("technical_score") or 5.0,
                 sentiment_score=result.get("sentiment_score") or 5.0,
@@ -138,8 +151,8 @@ class FundManager:
             summary="Decision unavailable - analysis error",
         )
 
-    @staticmethod
     def _synthesize_from_reports(
+        self,
         agent_reports: list[AgentReport],
         debate_report: DebateReport | None = None,
     ) -> dict:
@@ -199,6 +212,23 @@ class FundManager:
             action = "HOLD"
             reason = f"weighted_score={weighted:.1f}, mixed signals"
 
+        # Step 7: Position sizing — use current holding if exists
+        position_pct = 0.0
+        position_shares = 0
+        try:
+            portfolio = self.data.get_portfolio_state()
+            symbol = agent_reports[0].symbol if agent_reports else ""
+            for pos in portfolio.positions:
+                if pos.symbol == symbol:
+                    position_pct = pos.weight_pct / 100.0
+                    position_shares = pos.shares
+                    break
+            if position_pct == 0.0 and action == "BUY":
+                position_pct = 0.05
+                position_shares = int(portfolio.total_value * 0.05 / 20) // 100 * 100
+        except Exception:
+            pass
+
         methodology = (
             f"Step 1 - Score Extraction: Fundamental={f_score}/10, Technical={t_score}/10, Sentiment={s_score}/10\n"
             f"Step 2 - Weighted Score: {f_score}×0.40 + {t_score}×0.30 + {s_score}×0.30 = {weighted:.2f}/10\n"
@@ -207,6 +237,7 @@ class FundManager:
             f"Step 4 - Bull/Bear: Bull={bull_score}/10 vs Bear={bear_score}/10, Net Conviction={net_conviction:+.2f}\n"
             f"Step 5 - Risk Check: {'VETO — ' + ', '.join(risk_reasons) if risk_veto else 'Approved'}\n"
             f"Step 6 - Final Decision: {action} ({reason})\n"
+            f"Step 7 - Position: {position_pct:.1%} ({position_shares} shares)\n"
             f"[Auto-synthesized — LLM unavailable]"
         )
 
@@ -218,7 +249,8 @@ class FundManager:
             "fundamental_score": f_score,
             "technical_score": t_score,
             "sentiment_score": s_score,
-            "position_size_pct": 0.0 if action == "HOLD" else 0.05,
+            "position_size_pct": position_pct,
+            "position_size_shares": position_shares,
             "decision_methodology": methodology,
             "summary": f"Weighted score: {weighted:.2f}/10. {reason}. "
                        + (f"Bull/Bear conviction: {net_conviction:+.2f}. " if debate_report else ""),

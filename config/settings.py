@@ -24,8 +24,25 @@ class OllamaConfig(BaseModel):
     temperature: float = 0.3
 
 
+class OpenRouterConfig(BaseModel):
+    """OpenRouter configuration."""
+
+    model: str = "openai/gpt-oss-120b:free"
+    api_key_env: str = "OPENROUTER_API_KEY"
+    endpoint: str = "https://openrouter.ai/api/v1"
+    max_tokens: int = 4096
+    temperature: float = 0.3
+
+    @property
+    def api_key(self) -> str:
+        key = os.getenv(self.api_key_env, "")
+        if not key:
+            raise ValueError(f"Environment variable {self.api_key_env} is not set")
+        return key
+
+
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "github_models", "ollama"] = "github_models"
+    provider: Literal["anthropic", "github_models", "ollama", "openrouter"] = "github_models"
     model: str = "gpt-4o"
     model_final: str = "gpt-4o"
     max_tokens: int = 4096
@@ -98,6 +115,7 @@ class OutputConfig(BaseModel):
 class Settings(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
     account: AccountConfig = Field(default_factory=AccountConfig)
     futu: FutuConfig = Field(default_factory=FutuConfig)
     ths: THSConfig = Field(default_factory=THSConfig)

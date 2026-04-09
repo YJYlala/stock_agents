@@ -1,15 +1,22 @@
 llm:
-  provider: "github_models"   # anthropic / github_models / ollama
+  provider: "openrouter"          # anthropic / github_models / ollama / openrouter
   model: "gpt-4o"
   model_final: "gpt-4o"
   max_tokens: 4096
   temperature: 0.3
-  api_key_env: "GITHUB_TOKEN"  # your GitHub Copilot Pro PAT
+  api_key_env: "GITHUB_TOKEN"     # used by github_models / anthropic
   endpoint: "https://models.inference.ai.azure.com"
-  fallback: "ollama"           # ollama / none — auto-fallback when primary fails
+  fallback: "ollama"              # ollama / none — auto-fallback when primary fails
+
+openrouter:
+  model: "openai/gpt-oss-120b:free"
+  api_key_env: "OPENROUTER_API_KEY"
+  endpoint: "https://openrouter.ai/api/v1"
+  max_tokens: 4096
+  temperature: 0.3
 
 ollama:
-  model: "gemma3"              # best local model for financial analysis
+  model: "gemma4"              # best local model for financial analysis
   endpoint: "http://localhost:11434/v1"
   max_tokens: 4096
   temperature: 0.3

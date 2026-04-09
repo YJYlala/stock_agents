@@ -1,14 +1,16 @@
 """Orchestrator - runs the 5-phase agent pipeline."""
 
-import json
 import logging
 
 from stock_agents.agents.fundamental_analyst import FundamentalAnalyst
 from stock_agents.agents.fund_manager import FundManager
-from stock_agents.agents.llm_client import ClaudeLLMClient
-from stock_agents.agents.github_models_client import GitHubModelsLLMClient
-from stock_agents.agents.ollama_client import OllamaLLMClient
-from stock_agents.agents.fallback_client import FallbackLLMClient
+from stock_agents.llm import (
+    ClaudeLLMClient,
+    GitHubModelsLLMClient,
+    OllamaLLMClient,
+    OpenRouterLLMClient,
+    FallbackLLMClient,
+)
 from stock_agents.agents.quant_trader import QuantTrader
 from stock_agents.agents.research_bear import BearResearcher
 from stock_agents.agents.research_bull import BullResearcher
@@ -55,6 +57,24 @@ class TradingOrchestrator:
                 temperature=settings.ollama.temperature,
                 endpoint=settings.ollama.endpoint,
             )
+
+        if provider == "openrouter":
+            primary = OpenRouterLLMClient(
+                api_key=settings.openrouter.api_key,
+                model=model or settings.openrouter.model,
+                max_tokens=settings.openrouter.max_tokens,
+                temperature=settings.openrouter.temperature,
+                endpoint=settings.openrouter.endpoint,
+            )
+            if settings.llm.fallback == "ollama":
+                fallback = OllamaLLMClient(
+                    model=settings.ollama.model,
+                    max_tokens=settings.ollama.max_tokens,
+                    temperature=settings.ollama.temperature,
+                    endpoint=settings.ollama.endpoint,
+                )
+                return FallbackLLMClient(primary, fallback)
+            return primary
 
         # Build primary provider (github_models or anthropic)
         try:

@@ -1,20 +1,17 @@
 """Unified data manager combining all data sources."""
 
 import logging
-from datetime import datetime
-
-import pandas as pd
 
 from stock_agents.config.settings import Settings
 from stock_agents.data.akshare_client import AKShareClient
 from stock_agents.data.cache import DataCache
-from stock_agents.data.csv_portfolio import load_portfolio, get_trade_history, DEFAULT_CSV
+from stock_agents.data.csv_portfolio import load_portfolio, get_trade_history
 from stock_agents.indicators.technical import compute_all_indicators
 from stock_agents.indicators.risk_metrics import compute_risk_metrics
 from stock_agents.models.market_data import (
     FinancialData, OHLCVBar, StockSnapshot, TechnicalIndicators,
 )
-from stock_agents.models.portfolio import PortfolioState, RiskMetrics
+from stock_agents.models.portfolio import PortfolioState
 
 logger = logging.getLogger(__name__)
 

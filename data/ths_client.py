@@ -1,6 +1,5 @@
 """同花顺 account client based on local export files."""
 
-from __future__ import annotations
 
 import logging
 from pathlib import Path

@@ -2,8 +2,6 @@
 
 import logging
 import os
-from datetime import datetime, timedelta
-
 import akshare as ak
 import pandas as pd
 

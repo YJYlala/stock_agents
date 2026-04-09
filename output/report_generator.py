@@ -4,7 +4,6 @@ Shows portfolio context, each agent's full output, and the fund manager's
 complete decision with methodology. No fixed template — natural document flow.
 """
 
-import json
 from datetime import datetime
 from pathlib import Path
 

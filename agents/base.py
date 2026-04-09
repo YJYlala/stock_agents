@@ -4,24 +4,12 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Protocol
 
 from stock_agents.data.data_manager import DataManager
+from stock_agents.llm import LLMClient
 from stock_agents.models.signals import AgentReport
 
 logger = logging.getLogger(__name__)
-
-
-class LLMClient(Protocol):
-    """Protocol for LLM clients — both ClaudeLLMClient and GitHubModelsLLMClient satisfy this."""
-
-    def analyze(
-        self,
-        system_prompt: str,
-        user_message: str,
-        output_schema: Any = None,
-        max_retries: int = 3,
-    ) -> dict | str: ...
 
 
 class BaseAgent(ABC):

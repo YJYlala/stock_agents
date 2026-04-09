@@ -225,12 +225,15 @@ Based on weighted_score (after risk check):
 - weighted_score <= 2.5 AND 3 SELL votes → STRONG SELL
 - Otherwise or risk vetoed → HOLD
 
-### Step 7: Position Sizing (only if BUY)
-- Use QuantTrader's recommendation as base
-- Apply Risk Manager's approved size
-- Round to 100-share lots (A-share requirement)
+### Step 7: Position Sizing (ALWAYS compute, not just for BUY)
+- IMPORTANT: ALWAYS calculate a recommended position size, regardless of action.
+- For BUY: Use QuantTrader's recommendation, apply Risk Manager's limits, round to 100-share lots.
+- For HOLD with existing position: position_size_pct = current holding weight, position_size_shares = current shares held.
+- For HOLD with no position: position_size_pct = what you WOULD recommend if risk limits were met (e.g. 0.05-0.15), position_size_shares = compute from that pct.
+- For SELL: position_size_pct = 0.0, position_size_shares = number of shares to sell (negative or the held amount).
+- Also provide target_price and stop_loss estimates based on technical levels.
 
-## Output JSON Fields (ALL are required, fill in every field)
+## Output JSON Fields (ALL are required, fill in every field — do NOT leave position fields as 0)
 
 {
   "action": "BUY or SELL or HOLD",
@@ -238,12 +241,12 @@ Based on weighted_score (after risk check):
   "fundamental_score": X.X,
   "technical_score": X.X,
   "sentiment_score": X.X,
-  "target_price": number or null,
-  "stop_loss": number or null,
-  "position_size_pct": 0.0-1.0,
-  "position_size_shares": integer (multiple of 100),
+  "target_price": number (estimate based on technicals/fundamentals),
+  "stop_loss": number (key support level),
+  "position_size_pct": 0.0-1.0 (recommended portfolio weight — MUST be non-zero if holding or recommending to buy),
+  "position_size_shares": integer (multiple of 100 — current or recommended shares),
   "summary": "2-3 paragraph executive summary",
-  "decision_methodology": "Step-by-step calculation showing: 1) weighted_score computation, 2) vote tally, 3) bull/bear net conviction, 4) risk check result, 5) how final action was determined",
+  "decision_methodology": "Step-by-step calculation showing: 1) weighted_score computation, 2) vote tally, 3) bull/bear net conviction, 4) risk check result, 5) how final action was determined, 6) position sizing rationale",
   "bull_case": "Summary of the bull thesis",
   "bear_case": "Summary of the bear thesis",
   "risk_assessment": "Risk manager findings and portfolio impact"
