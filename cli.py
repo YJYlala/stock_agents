@@ -16,7 +16,10 @@ from stock_agents.compliance.logger import ComplianceLogger
 from stock_agents.data.csv_portfolio import load_portfolio, record_trade, get_held_symbols
 from stock_agents.orchestrator import TradingOrchestrator
 from stock_agents.output.copilot_plan import render_copilot_plan
-from stock_agents.output.formatters import print_decision, print_watchlist_summary
+from stock_agents.output.formatters import (
+    print_decision, print_watchlist_summary,
+    print_multi_horizon_decision, print_multi_horizon_watchlist,
+)
 from stock_agents.output.report_generator import save_report
 
 console = Console()
@@ -42,17 +45,52 @@ def _get_csv_path(settings) -> str:
 
 def cmd_analyze(args, settings):
     """Analyze a single stock."""
-    orchestrator = TradingOrchestrator(settings)
-    decision = orchestrator.analyze_stock(args.symbol)
+    horizon = getattr(args, "horizon", None)
 
-    print_decision(decision)
+    if horizon == "all" or horizon is None and getattr(args, "multi", False):
+        # Multi-horizon mode
+        from stock_agents.multi_horizon import MultiHorizonOrchestrator
+        orchestrator = MultiHorizonOrchestrator(settings)
+        result = orchestrator.analyze_stock(args.symbol)
 
-    compliance = ComplianceLogger(settings.log_dir)
-    compliance.log_decision(decision)
+        print_multi_horizon_decision(result)
 
-    if settings.output.save_to_file:
-        path = save_report(decision, settings.report_dir)
-        console.print(f"[dim]Report saved to: {path}[/]")
+        compliance = ComplianceLogger(settings.log_dir)
+        # Log each horizon's decision
+        for d in [result.short_term, result.mid_term, result.long_term]:
+            if d:
+                compliance.log_decision(d)
+        if settings.output.save_to_file:
+            for d in [result.short_term, result.mid_term, result.long_term]:
+                if d:
+                    path = save_report(d, settings.report_dir)
+            console.print(f"[dim]Reports saved to: {settings.report_dir}[/]")
+    elif horizon and horizon != "all":
+        # Single horizon mode
+        from stock_agents.config.horizons import Horizon
+        from stock_agents.multi_horizon import MultiHorizonOrchestrator
+        h = Horizon(horizon)
+        orchestrator = MultiHorizonOrchestrator(settings, horizons=[h])
+        result = orchestrator.analyze_stock(args.symbol)
+        # Show just that horizon's decision
+        decision = getattr(result, f"{horizon}_term", None)
+        if decision:
+            print_decision(decision)
+            compliance = ComplianceLogger(settings.log_dir)
+            compliance.log_decision(decision)
+            if settings.output.save_to_file:
+                path = save_report(decision, settings.report_dir)
+                console.print(f"[dim]Report saved to: {path}[/]")
+    else:
+        # Default: original single-team analysis (backward compatible)
+        orchestrator = TradingOrchestrator(settings)
+        decision = orchestrator.analyze_stock(args.symbol)
+        print_decision(decision)
+        compliance = ComplianceLogger(settings.log_dir)
+        compliance.log_decision(decision)
+        if settings.output.save_to_file:
+            path = save_report(decision, settings.report_dir)
+            console.print(f"[dim]Report saved to: {path}[/]")
 
 
 def cmd_watchlist(args, settings):
@@ -65,19 +103,40 @@ def cmd_watchlist(args, settings):
         settings.watchlist = merged
     console.print(f"[dim]Watchlist: {', '.join(settings.watchlist)} ({len(settings.watchlist)} stocks)[/]")
 
-    orchestrator = TradingOrchestrator(settings)
-    decisions = orchestrator.analyze_watchlist()
+    horizon = getattr(args, "horizon", None)
 
-    print_watchlist_summary(decisions)
+    if horizon == "all":
+        # Multi-horizon watchlist
+        from stock_agents.multi_horizon import MultiHorizonOrchestrator
+        orchestrator = MultiHorizonOrchestrator(settings)
+        results = orchestrator.analyze_watchlist()
 
-    compliance = ComplianceLogger(settings.log_dir)
-    for decision in decisions:
-        print_decision(decision)
-        compliance.log_decision(decision)
-        if settings.output.save_to_file:
-            save_report(decision, settings.report_dir)
+        print_multi_horizon_watchlist(results)
 
-    console.print(f"[dim]Reports saved to: {settings.report_dir}[/]")
+        compliance = ComplianceLogger(settings.log_dir)
+        for result in results:
+            print_multi_horizon_decision(result)
+            for d in [result.short_term, result.mid_term, result.long_term]:
+                if d:
+                    compliance.log_decision(d)
+                    if settings.output.save_to_file:
+                        save_report(d, settings.report_dir)
+        console.print(f"[dim]Reports saved to: {settings.report_dir}[/]")
+    else:
+        # Default: single-team analysis
+        orchestrator = TradingOrchestrator(settings)
+        decisions = orchestrator.analyze_watchlist()
+
+        print_watchlist_summary(decisions)
+
+        compliance = ComplianceLogger(settings.log_dir)
+        for decision in decisions:
+            print_decision(decision)
+            compliance.log_decision(decision)
+            if settings.output.save_to_file:
+                save_report(decision, settings.report_dir)
+
+        console.print(f"[dim]Reports saved to: {settings.report_dir}[/]")
 
 
 def cmd_portfolio(args, settings):
@@ -120,12 +179,53 @@ def cmd_trade(args, settings):
     """Record a trade."""
     csv_path = _get_csv_path(settings)
 
-    if args.trade_action == "buy":
-        record_trade(csv_path, "buy", args.symbol, "", args.shares, args.price, args.commission, args.note)
-        console.print(f"[green]Recorded: BUY {args.shares} x {args.symbol} @ {args.price:.2f}[/]")
-    elif args.trade_action == "sell":
-        record_trade(csv_path, "sell", args.symbol, "", args.shares, args.price, args.commission, args.note)
-        console.print(f"[red]Recorded: SELL {args.shares} x {args.symbol} @ {args.price:.2f}[/]")
+    if args.trade_action in ("buy", "sell"):
+        # Load portfolio state after the trade for market_value + cash_remaining
+        # First record without the new fields to update the CSV...
+        action = args.trade_action
+        symbol = args.symbol.strip()
+        shares = args.shares
+        price = args.price
+        commission = getattr(args, "commission", 0.0)
+        note = getattr(args, "note", "")
+
+        # Compute post-trade portfolio figures
+        state_before = load_portfolio(csv_path)
+        trade_value = shares * price + commission
+        if action == "buy":
+            cash_after = state_before.cash - trade_value
+        else:
+            cash_after = state_before.cash + (shares * price) - commission
+
+        # Calculate market value of this position after the trade
+        pos_shares = 0
+        pos_name = ""
+        avg_cost = price
+        for pos in state_before.positions:
+            if pos.symbol == symbol:
+                pos_name = pos.name
+                pos_shares = pos.shares
+                avg_cost = pos.avg_cost
+                break
+
+        new_shares = pos_shares + shares if action == "buy" else max(0, pos_shares - shares)
+        market_value_pos = new_shares * price  # position market value at trade price
+
+        record_trade(
+            csv_path, action, symbol, pos_name or symbol,
+            shares, price, commission, note,
+            market_value=market_value_pos,
+            cash_remaining=max(cash_after, 0),
+        )
+
+        color = "green" if action == "buy" else "red"
+        console.print(
+            f"[{color}]{'买入' if action == 'buy' else '卖出'} {shares:,} 股  {symbol}({pos_name or symbol})  "
+            f"@ {price:.3f}  手续费 {commission:.2f}[/]"
+        )
+        console.print(f"  当前市值 (该股)  : CNY [bold]{market_value_pos:>12,.2f}[/]  ({new_shares:,} 股 × {price:.3f})")
+        console.print(f"  剩余资金         : CNY [bold]{max(cash_after, 0):>12,.2f}[/]")
+
     elif args.trade_action == "history":
         import csv as csv_mod
         csv_file = Path(csv_path)
@@ -133,26 +233,50 @@ def cmd_trade(args, settings):
             console.print("[dim]No trades recorded yet[/]")
             return
         with open(csv_file, encoding="utf-8-sig") as f:
+            header_line = f.readline()
+        has_new_cols = "market_value" in header_line
+
+        with open(csv_file, encoding="utf-8-sig") as f:
             reader = csv_mod.DictReader(f)
-            table = Table(title="Trade History", show_header=True)
-            table.add_column("Date")
-            table.add_column("Action", width=8)
-            table.add_column("Symbol", width=8)
-            table.add_column("Name", width=10)
-            table.add_column("Shares", justify="right")
-            table.add_column("Price", justify="right")
-            table.add_column("Note")
+            table = Table(title="操作记录", show_header=True)
+            table.add_column("日期", width=12)
+            table.add_column("操作", width=6)
+            table.add_column("代码", width=8)
+            table.add_column("名称", width=10)
+            table.add_column("股数", justify="right", width=8)
+            table.add_column("价格", justify="right", width=8)
+            table.add_column("手续费", justify="right", width=8)
+            if has_new_cols:
+                table.add_column("当前市值", justify="right", width=12)
+                table.add_column("剩余资金", justify="right", width=12)
+            table.add_column("备注")
             for row in reader:
                 action = row.get("action", "")
-                color = "green" if action == "buy" else "red" if action == "sell" else "dim"
-                table.add_row(
-                    row.get("date", ""), f"[{color}]{action}[/]",
-                    row.get("symbol", ""), row.get("name", ""),
-                    row.get("shares", ""), row.get("price", ""), row.get("note", ""),
-                )
-            console.print(table)
+                if action not in ("buy", "sell"):
+                    continue
+                color = "green" if action == "buy" else "red"
+                label = "买入" if action == "buy" else "卖出"
+                cols = [
+                    row.get("date", ""),
+                    f"[{color}]{label}[/]",
+                    row.get("symbol", ""),
+                    row.get("name", ""),
+                    row.get("shares", ""),
+                    row.get("price", ""),
+                    row.get("commission", ""),
+                ]
+                if has_new_cols:
+                    mv = float(row.get("market_value") or 0)
+                    cr = float(row.get("cash_remaining") or 0)
+                    cols += [
+                        f"[bold]{mv:,.2f}[/]" if mv else "-",
+                        f"[bold]{cr:,.2f}[/]" if cr else "-",
+                    ]
+                cols.append(row.get("note", ""))
+                table.add_row(*cols)
+        console.print(table)
 
-    # Show updated portfolio
+    # Show updated portfolio summary
     cmd_portfolio(args, settings)
 
 
@@ -258,9 +382,19 @@ def main():
     # analyze
     p_analyze = sub.add_parser("analyze", help="Analyze a single stock")
     p_analyze.add_argument("symbol", help="Stock code (e.g., 600519)")
+    p_analyze.add_argument(
+        "--horizon", choices=["short", "mid", "long", "all"],
+        default=None,
+        help="Investment horizon: short (≤1mo), mid (1-6mo), long (6mo+), all (三周期)",
+    )
 
     # watchlist
-    sub.add_parser("watchlist", help="Analyze all stocks in watchlist")
+    p_wl = sub.add_parser("watchlist", help="Analyze all stocks in watchlist")
+    p_wl.add_argument(
+        "--horizon", choices=["short", "mid", "long", "all"],
+        default=None,
+        help="Investment horizon: short, mid, long, or all (三周期)",
+    )
 
     # portfolio
     sub.add_parser("portfolio", help="Show portfolio (from CSV tracker)")

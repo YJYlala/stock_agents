@@ -175,9 +175,10 @@ def generate_report(decision: FinalDecision) -> str:
     )
 
     # ── Header
+    model_label = decision.llm_model or "未知模型"
     report = f"""# {decision.name} ({decision.symbol}) 分析报告
 
-> 生成时间: {decision.timestamp.strftime("%Y-%m-%d %H:%M")} | 模型: GPT-4o via GitHub Models
+> 生成时间: {decision.timestamp.strftime("%Y-%m-%d %H:%M")} | 模型: {model_label}
 
 ---
 

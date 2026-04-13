@@ -27,6 +27,7 @@ class FundManager:
         agent_reports: list[AgentReport],
         debate_report: DebateReport | None = None,
         trade_history: list[dict] | None = None,
+        quant_signals: dict | None = None,
     ) -> FinalDecision:
         """Make final decision based on all agent inputs."""
         logger.info("[FundManager] Making final decision for %s...", symbol)
@@ -56,6 +57,28 @@ class FundManager:
             user_msg += f"Net Conviction: {debate_report.net_conviction}\n\n"
 
         user_msg += "=== PORTFOLIO STATE ===\n"
+
+        # Include pre-computed quant engine signals
+        if quant_signals:
+            user_msg += "=== PRE-COMPUTED QUANT ENGINE SIGNALS ===\n"
+            qs = quant_signals.get("quant_signal", {})
+            user_msg += f"Composite Score: {qs.get('composite_score', 'N/A')}/10\n"
+            user_msg += f"Model Signal: {qs.get('signal', 'N/A')}\n"
+            user_msg += f"Kelly Fraction: {qs.get('kelly_fraction', 0):.4f} (Half-Kelly: {qs.get('half_kelly', 0):.4f})\n"
+            user_msg += f"Win Probability: {qs.get('win_probability', 0):.1%}\n"
+            user_msg += f"Risk/Reward Ratio: {qs.get('risk_reward_ratio', 0):.2f}\n"
+            user_msg += f"Recommended Position: {qs.get('position_size_pct', 0):.1%} ({qs.get('position_size_shares', 0)} shares)\n\n"
+
+            rs = quant_signals.get("risk_signal", {})
+            user_msg += f"Risk Approved: {rs.get('risk_approved', 'N/A')}\n"
+            user_msg += f"Stop Loss: {rs.get('stop_loss_price', 'N/A')}\n"
+            user_msg += f"Max Loss: {rs.get('max_loss_amount', 'N/A')} CNY\n"
+            veto_reasons = rs.get("veto_reasons", [])
+            if veto_reasons:
+                user_msg += f"Veto Reasons: {', '.join(veto_reasons)}\n"
+            user_msg += "\n"
+
+        user_msg += "=== PORTFOLIO STATE (continued) ===\n"
         user_msg += f"Total Value: {portfolio.total_value:,.0f}\n"
         user_msg += f"Cash: {portfolio.cash:,.0f}\n"
         user_msg += f"Existing Positions: {len(portfolio.positions)}\n"
@@ -107,6 +130,9 @@ class FundManager:
             pct = result.get("position_size_pct")
             if pct is None:
                 pct = 0.0
+            # LLM often returns percent units (e.g. 8.5 for 8.5%) — normalize to 0-1
+            if pct > 1.0:
+                pct = pct / 100.0
             shares_from_llm = result.get("position_size_shares")
 
             # Fallback: if LLM returned 0 but user holds shares, use current holding
@@ -142,6 +168,7 @@ class FundManager:
                 risk_assessment=result.get("risk_assessment") or "",
                 agent_reports=agent_reports,
                 debate_report=debate_report,
+                llm_model=getattr(self.llm, "model_label", ""),
             )
 
         return FinalDecision(
@@ -149,6 +176,7 @@ class FundManager:
             name=snapshot.name,
             current_price=snapshot.current_price,
             summary="Decision unavailable - analysis error",
+            llm_model=getattr(self.llm, "model_label", ""),
         )
 
     def _synthesize_from_reports(

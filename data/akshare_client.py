@@ -89,33 +89,46 @@ class AKShareClient:
             return pd.DataFrame()
 
     def get_realtime_quote(self, symbol: str) -> dict:
-        """Get real-time quote for a stock using individual stock API (fast)."""
+        """Get real-time quote using bid/ask depth — current_price = best ask (sell_1)."""
         symbol = self._normalize_symbol(symbol)
         try:
-            # Use individual stock info instead of fetching all stocks
-            df = ak.stock_individual_info_em(symbol=symbol)
-            info = {}
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    key = str(row.iloc[0]) if len(row) > 0 else ""
-                    val = row.iloc[1] if len(row) > 1 else ""
-                    info[key] = val
+            bid_ask = ak.stock_bid_ask_em(symbol=symbol)
+            bid_ask_dict = {}
+            if bid_ask is not None and not bid_ask.empty:
+                for _, row in bid_ask.iterrows():
+                    bid_ask_dict[str(row["item"])] = float(row["value"])
 
-            # Get latest price from history (last bar)
+            best_buy = bid_ask_dict.get("buy_1", 0)   # highest bid
+            best_sell = bid_ask_dict.get("sell_1", 0)  # lowest ask (= current market price)
+            # Use sell_1 as the current price — this is the actual price shown on trading platforms
+            current_price = best_sell if best_sell else best_buy
+
+            # Get previous close for change calculation
             hist = self.get_stock_history(symbol, days=5)
-            current_price = 0.0
             change_pct = 0.0
-            if not hist.empty:
-                current_price = float(hist["close"].iloc[-1])
-                if len(hist) >= 2:
-                    prev = float(hist["close"].iloc[-2])
-                    change_pct = (current_price - prev) / prev * 100 if prev > 0 else 0
+            if not hist.empty and current_price > 0:
+                prev_close = float(hist["close"].iloc[-2]) if len(hist) >= 2 else float(hist["close"].iloc[-1])
+                change_pct = (current_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
+            # Company info for name, market cap, PE, PB
+            info = {}
+            try:
+                df_info = ak.stock_individual_info_em(symbol=symbol)
+                if df_info is not None and not df_info.empty:
+                    for _, row in df_info.iterrows():
+                        key = str(row.iloc[0]) if len(row) > 0 else ""
+                        val = row.iloc[1] if len(row) > 1 else ""
+                        info[key] = val
+            except Exception:
+                pass
 
             return {
                 "symbol": symbol,
                 "name": str(info.get("股票简称", info.get("名称", ""))),
-                "current_price": current_price,
+                "current_price": round(current_price, 3),
                 "change_pct": round(change_pct, 2),
+                "best_bid": best_buy,
+                "best_ask": best_sell,
                 "volume": 0,
                 "amount": 0,
                 "market_cap": float(info.get("总市值", 0) or 0),
@@ -193,7 +206,7 @@ class AKShareClient:
             for _, row in df.head(count).iterrows():
                 items.append({
                     "title": str(row.get("新闻标题", "")),
-                    "content": str(row.get("新闻内容", ""))[:500],
+                    "content": str(row.get("新闻内容", ""))[:200],
                     "time": str(row.get("发布时间", "")),
                     "source": str(row.get("文章来源", "")),
                 })

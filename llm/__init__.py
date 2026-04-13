@@ -17,6 +17,7 @@ class LLMClient(Protocol):
 
 from stock_agents.llm.claude_client import ClaudeLLMClient
 from stock_agents.llm.github_models_client import GitHubModelsLLMClient
+from stock_agents.llm.azure_openai_client import AzureOpenAILLMClient
 from stock_agents.llm.ollama_client import OllamaLLMClient
 from stock_agents.llm.openrouter_client import OpenRouterLLMClient
 from stock_agents.llm.fallback_client import FallbackLLMClient
@@ -25,6 +26,7 @@ __all__ = [
     "LLMClient",
     "ClaudeLLMClient",
     "GitHubModelsLLMClient",
+    "AzureOpenAILLMClient",
     "OllamaLLMClient",
     "OpenRouterLLMClient",
     "FallbackLLMClient",

@@ -41,6 +41,12 @@ class BullResearcher(BaseAgent):
             },
         }
 
+        # Include pre-computed quant signals for advocacy
+        if context and "quant_signals" in context:
+            data["fundamental_signal"] = context["quant_signals"].get("fundamental_signal", {})
+            data["technical_signal"] = context["quant_signals"].get("technical_signal", {})
+            data["quant_signal"] = context["quant_signals"].get("quant_signal", {})
+
         # Include prior reports summaries for synthesis
         if context and "prior_reports" in context:
             summaries = []

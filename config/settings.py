@@ -42,7 +42,7 @@ class OpenRouterConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "github_models", "ollama", "openrouter"] = "github_models"
+    provider: Literal["anthropic", "github_models", "azure_openai", "ollama", "openrouter"] = "github_models"
     model: str = "gpt-4o"
     model_final: str = "gpt-4o"
     max_tokens: int = 4096
@@ -50,6 +50,9 @@ class LLMConfig(BaseModel):
     api_key_env: str = "GITHUB_TOKEN"
     endpoint: str = "https://models.inference.ai.azure.com"
     fallback: Literal["ollama", "none"] = "ollama"
+    # Azure OpenAI specific
+    azure_api_version: str = "2025-01-01-preview"
+    azure_deployment: str = ""  # deployment name (overrides model for Azure)
 
     @property
     def api_key(self) -> str:

@@ -21,9 +21,13 @@ class SentimentAnalyst(BaseAgent):
             "name": snapshot.name,
             "current_price": snapshot.current_price,
             "change_pct": snapshot.change_pct,
-            "recent_news": news[:15],
-            "insider_trades": insider[:10],
+            "recent_news": news[:8],
+            "insider_trades": insider[:5],
         }
+        # Include pre-computed quant signals for macro context
+        if context and "quant_signals" in context:
+            data["fundamental_signal"] = context["quant_signals"].get("fundamental_signal", {})
+            data["technical_signal"] = context["quant_signals"].get("technical_signal", {})
         if context and "portfolio" in context:
             portfolio = context["portfolio"]
             data["my_portfolio"] = {"cash": portfolio["cash"], "total_value": portfolio["total_value"]}

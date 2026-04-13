@@ -42,6 +42,10 @@ class OllamaLLMClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
 
+    @property
+    def model_label(self) -> str:
+        return f"{self.model} (Ollama)"
+
     def analyze(
         self,
         system_prompt: str,

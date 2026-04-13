@@ -64,3 +64,24 @@ class FinalDecision(BaseModel):
     # Portfolio context for report
     portfolio_snapshot: dict[str, Any] = Field(default_factory=dict)
     trade_history: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Horizon info (optional — set when using multi-horizon analysis)
+    horizon: str = ""            # "short", "mid", "long" or "" for default
+    horizon_label: str = ""      # "短线", "中线", "长线"
+    llm_model: str = ""          # e.g. "gpt-54 (Azure OpenAI)"
+
+
+class MultiHorizonDecision(BaseModel):
+    """Combined decision from all three horizon teams."""
+    symbol: str
+    name: str = ""
+    timestamp: datetime = Field(default_factory=datetime.now)
+    current_price: float = 0.0
+
+    short_term: FinalDecision | None = None
+    mid_term: FinalDecision | None = None
+    long_term: FinalDecision | None = None
+
+    consensus_action: str = "HOLD"
+    consensus_confidence: float = 0.5
+    consensus_summary: str = ""

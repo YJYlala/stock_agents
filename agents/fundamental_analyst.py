@@ -36,6 +36,9 @@ class FundamentalAnalyst(BaseAgent):
             "profit_growth": financials.profit_growth,
             "report_dates": financials.report_dates,
         }
+        # Include pre-computed quant signals (fundamental_signal is the key section)
+        if context and "quant_signals" in context:
+            data["fundamental_signal"] = context["quant_signals"].get("fundamental_signal", {})
         if context and "portfolio" in context:
             portfolio = context["portfolio"]
             data["my_portfolio"] = {"cash": portfolio["cash"], "total_value": portfolio["total_value"]}

@@ -1,5 +1,6 @@
 """Base agent class for all analyst agents."""
 
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -96,3 +97,7 @@ class BaseAgent(ABC):
             confidence=0.0,
             data_used=data,
         )
+
+    async def analyze_async(self, symbol: str, context: dict | None = None) -> AgentReport:
+        """Async wrapper — runs analyze() in a thread pool so LLM I/O doesn't block."""
+        return await asyncio.to_thread(self.analyze, symbol, context)

@@ -40,6 +40,13 @@ class QuantTrader(BaseAgent):
             },
         }
 
+        # Include ALL pre-computed quant signals (this agent's bread and butter)
+        if context and "quant_signals" in context:
+            data["quant_signal"] = context["quant_signals"].get("quant_signal", {})
+            data["technical_signal"] = context["quant_signals"].get("technical_signal", {})
+            data["fundamental_signal"] = context["quant_signals"].get("fundamental_signal", {})
+            data["risk_signal"] = context["quant_signals"].get("risk_signal", {})
+
         # Include prior reports + debate for position sizing context
         if context:
             if "prior_reports" in context:
