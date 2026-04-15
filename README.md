@@ -13,12 +13,15 @@ A multi-agent AI system for China A-share stock analysis. Eight specialist AI ag
 3. [Three-Horizon System](#three-horizon-system)
 4. [Agent Philosophies](#agent-philosophies)
 5. [5-Phase Pipeline](#5-phase-pipeline)
-6. [Quant Engine](#quant-engine)
-7. [LLM Backends](#llm-backends)
-8. [CLI Reference](#cli-reference)
-9. [Portfolio Tracking](#portfolio-tracking)
-10. [Configuration](#configuration)
-11. [Project Structure](#project-structure)
+6. [Market Context & International News](#market-context--international-news)
+7. [AI News Curation](#ai-news-curation)
+8. [Quant Engine](#quant-engine)
+9. [LLM Backends](#llm-backends)
+10. [CLI Reference](#cli-reference)
+11. [Scheduled Reports (GitHub Actions)](#scheduled-reports-github-actions)
+12. [Portfolio Tracking](#portfolio-tracking)
+13. [Configuration](#configuration)
+14. [Project Structure](#project-structure)
 
 ---
 
@@ -121,6 +124,22 @@ python -m stock_agents copilot-plan
           └──────────┬────────────────┘
                      │
      ┌───────────────▼──────────────────────────┐
+     │         Data Enrichment Layer             │
+     │  MarketContext (国内+国际市场数据)          │
+     │    ├─ A-share indices (上证/深证/创业板)   │
+     │    ├─ US indices (Dow/Nasdaq/S&P500)      │
+     │    ├─ USD/CNY forex rate                  │
+     │    ├─ Global news (华尔街见闻/财联社)       │
+     │    ├─ Industry/concept board rankings     │
+     │    ├─ Sector fund flows                   │
+     │    └─ CCTV policy news                    │
+     │  AI NewsCurator (LLM-filtered news)       │
+     │    ├─ init_summary (macro→micro digest)   │
+     │    └─ useful_news (AI-filtered headlines) │
+     │  Null Annotation (_note fields)           │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
      │              Data Layer                   │
      │  AKShare (市场数据)  ·  CSV Portfolio      │
      │  File Cache (JSON, TTL=15min)             │
@@ -157,8 +176,8 @@ python -m stock_agents copilot-plan
                      │
      ┌───────────────▼──────────────────────────┐
      │           LLM Backends                    │
-     │  Azure OpenAI (GPT-5.4)  [primary]       │
-     │  GitHub Models / Copilot Pro             │
+     │  GitHub Copilot Pro (full model catalog) │
+     │  Azure OpenAI (GPT-5.4)                  │
      │  Anthropic Claude                        │
      │  Ollama  (local fallback)                │
      │  FallbackClient  (auto rate-limit retry) │
@@ -167,6 +186,8 @@ python -m stock_agents copilot-plan
      ┌───────────────▼──────────────────────────┐
      │             Output                        │
      │  Rich console  ·  Markdown reports        │
+     │  Date-organized: reports/YYYY-MM-DD/      │
+     │  Email (multi-recipient, raw data incl.)  │
      │  Compliance JSONL log  ·  Copilot plan    │
      └──────────────────────────────────────────┘
 ```
@@ -241,9 +262,29 @@ Each horizon team gets a Chinese-language preamble prepended to the base prompt,
 
 ## 5-Phase Pipeline
 
-Each analysis (per stock, per horizon) runs through five phases.
+Each analysis (per stock, per horizon) runs through seven phases (0, 0.5, 1–5).
 
-### Phase 0 — Quant Engine (before any LLM)
+### Phase 0 — Market Context (before any stock analysis)
+
+Fetched **once per run** and cached for all stocks:
+- **A-share indices**: Shanghai Composite, Shenzhen Component, ChiNext (5-day trend)
+- **US indices**: Dow Jones, Nasdaq, S&P 500 (via Sina Finance)
+- **Forex**: USD/CNY spot rate
+- **International news**: 15 headlines from 华尔街见闻 + 财联社 (filtered for global macro relevance)
+- **Sector boards**: Top/bottom industry performers, hot concept themes
+- **Fund flows**: Sector-level institutional money flow rankings
+- **Policy news**: CCTV News headline items
+
+### Phase 0.5 — Data Enrichment (per stock)
+
+After quant engine runs:
+1. **Null annotation**: Every `null` field in quant signals gets a `_note` sibling explaining *why* it's null (e.g., `"eps_note": "EPS is negative — Graham formula requires positive earnings"`)
+2. **AI news curation**: LLM filters raw news into structured digest:
+   - `init_summary`: 200-char macro→micro news environment digest
+   - `useful_news`: AI-filtered top-8 actionable headlines
+   - `company_events`, `risk_flags`, `sentiment_summary`
+
+### Phase 1 — Data Pre-fetch & Quant Engine
 
 The deterministic quant engine pre-computes everything numeric:
 
@@ -257,8 +298,6 @@ raw market data
 ```
 
 All four result sections are injected into every agent's context as structured JSON (not prose).
-
-### Phase 1 — Data Pre-fetch
 
 AKShare fetches and caches (15 min TTL):
 - 250-day OHLCV price history
@@ -307,6 +346,45 @@ Seven-step synthesis:
 
 ---
 
+## Market Context & International News
+
+The system fetches macro-level context **once per run** (cached for all stocks in the batch). This gives every agent a global→local reasoning chain.
+
+**Data sources:**
+
+| Source | Data | API |
+|--------|------|-----|
+| Sina Finance | US indices (Dow, Nasdaq, S&P 500) | `index_us_stock_sina` |
+| AKShare | A-share indices (5-day trend) | `stock_zh_index_daily` |
+| AKShare | USD/CNY exchange rate | `fx_spot_quote` |
+| 华尔街见闻 | International financial headlines | WallStreetCN API |
+| 财联社 | Chinese financial flash news | CLS Telegraph API |
+| 东方财富 | Industry/concept board rankings | `stock_board_industry_name_em` |
+| 东方财富 | Sector fund flow rankings | `stock_sector_fund_flow_rank` |
+| 央视新闻 | Policy/macro news | `news_cctv` |
+| AKShare | Per-stock industry performance | `stock_individual_info_em` |
+
+**Prediction philosophy:** All agents are instructed to use historical pattern matching, business cycle positioning, and scenario analysis (bull/base/bear) to make **forward-looking predictions** — not just describe current data.
+
+---
+
+## AI News Curation
+
+Raw news goes through a two-stage AI curation pipeline before reaching agents:
+
+**Stage 1 — NewsCurator** (cheap LLM call, gpt-5.4-mini):
+- Filters raw company news + market context through AI
+- Outputs: `init_summary` (200-char macro→micro digest), `useful_news` (top-8 actionable headlines), `company_events`, `risk_flags`, `sentiment_summary`
+
+**Stage 2 — SentimentAnalyst** receives:
+- The `init_summary` as pre-digested context
+- The `useful_news` (AI-filtered) instead of raw `news[:8]`
+- Full `curated_news` digest for deeper reasoning
+
+This two-stage flow ensures the sentiment agent works with **signal, not noise**.
+
+---
+
 ## Quant Engine
 
 `indicators/quant_engine.py` is the math backbone. Call it directly:
@@ -348,7 +426,7 @@ Configure `llm.provider` in `config.yaml`:
 | Provider | `provider` value | Notes |
 |----------|-----------------|-------|
 | **Azure OpenAI** | `azure_openai` | HP corporate endpoint, GPT-5.4, HP UID OAuth bearer auth |
-| **GitHub Models** | `github_models` | Free with Copilot Pro. GPT-4o via Azure. Full catalog needs fine-grained PAT |
+| **GitHub Models** | `github_models` | Free with Copilot Pro. Auto-detects token type for full catalog access |
 | **Anthropic** | `anthropic` | Claude 3.5/3.7. Needs `ANTHROPIC_API_KEY` |
 | **Ollama** | `ollama` | Local, free, no network. `gemma4` recommended |
 | **OpenRouter** | `openrouter` | Access to many models. Needs `OPENROUTER_API_KEY` |
@@ -373,13 +451,38 @@ The client auto-fetches an HP UID OAuth bearer token (30 min expiry, auto-refres
 
 ### GitHub Models / Copilot Pro
 
-Use a **fine-grained PAT** (not classic `ghp_*`) with the "Copilot Requests" permission:
+**Recommended: Use the built-in OAuth login** (same flow as GitHub Copilot CLI, Hermes Agent, opencode):
 
-```env
-COPILOT_GITHUB_TOKEN=github_pat_...
+```bash
+# Authenticate with GitHub Copilot (opens browser)
+python -m stock_agents copilot-login
+
+# See all models available under your Copilot Pro subscription
+python -m stock_agents copilot-models
 ```
 
-Classic PATs are automatically downgraded to the free GitHub Models endpoint (GPT-4o only).
+This grants access to the **full Copilot Pro model catalog** (GPT-5.4, Claude Opus 4.6, Gemini 2.5 Pro, etc.) via `api.githubcopilot.com`.
+
+**Token resolution order** (first match wins):
+
+| Priority | Source | How to set |
+|----------|--------|-----------|
+| 1 | `COPILOT_GITHUB_TOKEN` env var | `export COPILOT_GITHUB_TOKEN=gho_...` |
+| 2 | `GH_TOKEN` env var | `export GH_TOKEN=github_pat_...` |
+| 3 | `GITHUB_TOKEN` env var | `export GITHUB_TOKEN=github_pat_...` |
+| 4 | Cached OAuth token | Auto-saved by `copilot-login` in `~/.stock-agents/copilot_token.json` |
+| 5 | `gh auth token` (GitHub CLI) | `gh auth login` |
+
+**Token types:**
+
+| Token prefix | API access | Notes |
+|-------------|-----------|-------|
+| `gho_*` (OAuth from copilot-login) | ✅ Full Copilot catalog | **Recommended** — all Copilot Pro models |
+| `github_pat_*` (fine-grained PAT) | ✅ Full Copilot catalog | Needs "Copilot Requests" permission |
+| `ghp_*` (classic PAT) | ⚠️ GitHub Models only | Limited to GPT-4o; auto-downgraded |
+| `gho_*` (from `gh auth login`) | ⚠️ Depends on scopes | May need `copilot-login` for full access |
+
+Classic PATs (`ghp_*`) are automatically downgraded to the free GitHub Models endpoint (GPT-4o only).
 
 ---
 
@@ -446,11 +549,104 @@ Print current resolved configuration.
 python -m stock_agents config
 ```
 
+### `report-and-notify`
+
+Run full watchlist analysis, save reports, and send notifications. This is the command used by GitHub Actions and cron jobs.
+
+```bash
+python -m stock_agents report-and-notify           # skips non-trading days
+python -m stock_agents report-and-notify --force    # run regardless of trading calendar
+```
+
+### `debug`
+
+Step-by-step pipeline debugger for inspecting data, prompts, and agent output.
+
+```bash
+python -m stock_agents debug 600711                              # all non-LLM phases
+python -m stock_agents debug 600711 --phase data                # data fetch only
+python -m stock_agents debug 600711 --phase prompt              # show agent prompts
+python -m stock_agents debug 600711 --phase agent --agent fundamental   # run one agent with real LLM
+```
+
+### `copilot-login`
+
+Authenticate with GitHub Copilot via OAuth device code flow (opens browser).
+
+```bash
+python -m stock_agents copilot-login
+```
+
+### `copilot-models`
+
+List all models available under your Copilot Pro subscription.
+
+```bash
+python -m stock_agents copilot-models
+```
+
 ### Global flags
 
 ```bash
 python -m stock_agents -v analyze 600711       # verbose logging
 python -m stock_agents --config my.yaml ...   # custom config file
+```
+
+---
+
+## Scheduled Reports (GitHub Actions)
+
+Automated premarket analysis runs every trading day at 08:00 Beijing time via GitHub Actions.
+
+### How it works
+
+```
+GitHub Actions cron (00:00 UTC = 08:00 Beijing, Mon-Fri)
+  → Check if today is an A-share trading day (skips Chinese holidays)
+  → Run: python -m stock_agents report-and-notify
+    → Analyze all watchlist stocks (5-phase pipeline)
+    → Save markdown reports to reports/
+    → Commit reports to repo
+    → Send notification (Email / Telegram / 企业微信)
+```
+
+### Setup
+
+1. **Add secrets** in your GitHub repo → Settings → Secrets and Variables → Actions:
+
+   | Secret | Required | Description |
+   |--------|----------|-------------|
+   | `AZURE_OPENAI_API_KEY` | ✅ | Azure OpenAI API key |
+   | `AZURE_OPENAI_ENDPOINT` | ✅ | Azure OpenAI endpoint URL |
+   | `GH_MODELS_TOKEN` | If using GitHub Models | OAuth token from `copilot-login` or fine-grained PAT |
+   | `EMAIL_FROM` | Optional | Sender email address |
+   | `EMAIL_PASSWORD` | Optional | SMTP app-password (Gmail: use App Passwords) |
+   | `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token from @BotFather |
+   | `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat/group ID |
+   | `WECHAT_WEBHOOK_URL` | Optional | 企业微信群机器人 webhook URL |
+
+2. **Enable notifications** in `config.yaml`:
+
+   ```yaml
+   schedule:
+     skip_holidays: true
+     notification:
+       telegram:
+         enabled: true
+       # or email / wechat — see config.yaml for all options
+   ```
+
+3. **Push to GitHub** — the workflow file `.github/workflows/premarket-report.yml` handles everything.
+
+4. **Manual trigger**: Go to Actions tab → "Premarket Analysis Report" → "Run workflow".
+
+### Local cron (alternative)
+
+If you prefer running locally instead of GitHub Actions:
+
+```bash
+# macOS/Linux — add to crontab -e
+0 8 * * 1-5 cd /path/to/GenAI && python -m stock_agents report-and-notify >> logs/cron.log 2>&1
 ```
 
 ---
@@ -494,13 +690,11 @@ All settings in `config.yaml`. Override via `.env` or environment variables.
 
 ```yaml
 llm:
-  provider: "azure_openai"          # LLM backend
-  model: "gpt-54"                   # Model for analyst agents (Phases 2-4)
-  model_final: "gpt-54"            # Model for FundManager (Phase 5)
+  provider: "github_models"         # LLM backend (github_models recommended)
+  model: "gpt-5.4-mini"             # Model for analyst agents (Phases 2-4)
+  model_final: "gpt-5.4"            # Model for FundManager (Phase 5)
   max_tokens: 4096
   temperature: 0.3
-  endpoint: "https://..."           # Azure endpoint URL
-  azure_deployment: "gpt-54"
   fallback: "ollama"                # Fallback provider on primary failure
 
 ollama:
@@ -530,7 +724,19 @@ cache:
 
 output:
   save_to_file: true
-  output_directory: "reports"
+  output_directory: "reports"     # Reports saved to reports/YYYY-MM-DD/
+
+schedule:
+  notification:
+    email:
+      enabled: true
+      smtp_server: "smtp.163.com"
+      smtp_port: 465
+      from_addr_env: "your@163.com"
+      password_env: "EMAIL_PASSWORD"   # Environment variable name
+      to_addr:                         # Single address or list
+        - "recipient1@example.com"
+        - "recipient2@example.com"
 ```
 
 ---
@@ -541,17 +747,20 @@ output:
 stock_agents/
 ├── __main__.py              # Entry point
 ├── cli.py                   # CLI commands + Rich console output
-├── orchestrator.py          # Single-team 5-phase pipeline
+├── orchestrator.py          # Single-team 5-phase pipeline (+ Phase 0/0.5)
 ├── multi_horizon.py         # Three-horizon orchestrator (SHORT/MID/LONG)
 ├── mcp_server.py            # MCP server for GitHub Copilot integration
 ├── config.yaml              # Main configuration
 ├── portfolio.csv            # Your trade log (source of truth for holdings)
 │
+├── .github/workflows/
+│   └── premarket-report.yml # GitHub Actions: daily premarket analysis
+│
 ├── agents/                  # 8 AI analyst agents
 │   ├── base.py              # BaseAgent ABC: gather_data() + analyze()
 │   ├── fundamental_analyst.py   # Philosophy: Ben Graham + Jim Simons
 │   ├── technical_analyst.py     # Philosophy: Jim Simons (Renaissance)
-│   ├── sentiment_analyst.py     # Philosophy: Ray Dalio
+│   ├── sentiment_analyst.py     # Philosophy: Ray Dalio (two-stage news flow)
 │   ├── research_bull.py         # Philosophy: Cliff Asness (AQR)
 │   ├── research_bear.py         # Philosophy: Nassim Taleb
 │   ├── quant_trader.py          # Philosophy: Jim Simons (Kelly sizing)
@@ -560,7 +769,7 @@ stock_agents/
 │
 ├── config/
 │   ├── settings.py          # Pydantic settings model (YAML + .env)
-│   ├── prompts.py           # System prompts for all 8 agents + get_horizon_prompt()
+│   ├── prompts.py           # System prompts + METRICS_GLOSSARY + prediction philosophy
 │   └── horizons.py          # SHORT/MID/LONG HorizonConfig presets
 │
 ├── indicators/
@@ -570,8 +779,10 @@ stock_agents/
 │
 ├── llm/
 │   ├── __init__.py          # LLMClient Protocol (duck-typed interface)
+│   ├── schema_builder.py    # Shared JSON schema instruction builder
+│   ├── copilot_auth.py      # GitHub Copilot Pro OAuth device flow
+│   ├── github_models_client.py  # GitHub Copilot Pro API (full model catalog)
 │   ├── azure_openai_client.py   # Azure OpenAI + HP UID OAuth + cert handling
-│   ├── github_models_client.py  # GitHub Models / Copilot Pro API
 │   ├── claude_client.py         # Anthropic Claude
 │   ├── ollama_client.py         # Local Ollama (OpenAI-compatible)
 │   ├── openrouter_client.py     # OpenRouter
@@ -580,10 +791,11 @@ stock_agents/
 ├── data/
 │   ├── data_manager.py      # Unified data interface (all agents call this)
 │   ├── akshare_client.py    # A-share market data via AKShare
+│   ├── market_context.py    # Macro context: indices, forex, intl news, sectors
+│   ├── news_curator.py      # AI news curation (LLM-filtered digest)
 │   ├── csv_portfolio.py     # Trade log reader + portfolio state calculator
 │   ├── cache.py             # File-based JSON cache with TTL
-│   ├── futu_client.py       # Futu OpenD broker client
-│   └── ths_client.py        # THS file-based account reader
+│   └── trading_calendar.py  # A-share trading day detection (holidays)
 │
 ├── models/
 │   ├── market_data.py       # OHLCVBar, StockSnapshot, FinancialData, TechnicalIndicators
@@ -592,8 +804,9 @@ stock_agents/
 │
 ├── output/
 │   ├── formatters.py        # Rich console tables (single + multi-horizon display)
-│   ├── report_generator.py  # Full Markdown analysis report generator
-│   └── copilot_plan.py      # Pre-trading action plan generator
+│   ├── report_generator.py  # Full Markdown report (fund manager decision first)
+│   ├── copilot_plan.py      # Pre-trading action plan generator
+│   └── notify.py            # Email notification (multi-recipient, raw data incl.)
 │
 ├── compliance/
 │   └── logger.py            # JSONL audit log — every decision persisted
@@ -607,7 +820,7 @@ stock_agents/
 │   ├── test_agents.py       # Agent output schema, report generation
 │   └── test_realtime_price.py  # Real-time price polling (10x, 10s interval)
 │
-├── reports/                 # Generated Markdown reports (gitignored)
+├── reports/                 # Generated reports: reports/YYYY-MM-DD/ (gitignored)
 ├── logs/                    # Compliance JSONL logs (gitignored)
 └── .cache/                  # Cached API responses (gitignored)
 ```

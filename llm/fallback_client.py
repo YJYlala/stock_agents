@@ -5,13 +5,9 @@ import time
 
 from pydantic import BaseModel
 
+from stock_agents.llm.base_client import DEFAULT_MAX_RETRIES, _is_rate_limit_error
+
 logger = logging.getLogger(__name__)
-
-
-def _is_rate_limit_error(e: Exception) -> bool:
-    """Check if the exception is a rate limit (429) error."""
-    msg = str(e).lower()
-    return "429" in msg or "rate limit" in msg or "rate_limit" in msg
 
 
 class FallbackLLMClient:
@@ -38,7 +34,7 @@ class FallbackLLMClient:
         system_prompt: str,
         user_message: str,
         output_schema: type[BaseModel] | None = None,
-        max_retries: int = 5,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> dict | str:
         # If permanently switched (3+ non-rate-limit failures), skip primary
         if self._permanent_fallback:

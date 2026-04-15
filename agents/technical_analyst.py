@@ -43,4 +43,6 @@ class TechnicalAnalyst(BaseAgent):
                 if pos["symbol"] == symbol:
                     data["my_position"] = pos
                     break
+        if context and "market_context" in context:
+            data["market_context"] = context["market_context"]
         return data

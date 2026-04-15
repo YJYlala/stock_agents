@@ -1,14 +1,22 @@
 """CLI interface for the Stock Agents system."""
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
+# Allow running as `python cli.py` directly (adds GenAI/ to sys.path so
+# `stock_agents.*` imports resolve regardless of how the file is launched).
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 
 from stock_agents.config.settings import load_settings
@@ -162,13 +170,15 @@ def cmd_portfolio(args, settings):
         table.add_column("PnL%", justify="right", width=8)
         table.add_column("Weight", justify="right", width=8)
         for p in state.positions:
-            color = "green" if p.unrealized_pnl >= 0 else "red"
+            pnl_val = p.unrealized_pnl or 0
+            color = "green" if pnl_val >= 0 else "red"
             table.add_row(
                 p.symbol, p.name[:8], str(p.shares),
-                f"{p.avg_cost:.3f}", f"{p.current_price:.3f}",
-                f"{p.market_value:,.2f}",
-                f"[{color}]{p.unrealized_pnl:+,.2f}[/]",
-                f"[{color}]{p.unrealized_pnl_pct:+.2f}%[/]",
+                f"{p.avg_cost:.3f}" if p.avg_cost is not None else "-",
+                f"{p.current_price:.3f}" if p.current_price is not None else "-",
+                f"{p.market_value:,.2f}" if p.market_value is not None else "-",
+                f"[{color}]{pnl_val:+,.2f}[/]",
+                f"[{color}]{(p.unrealized_pnl_pct or 0):+.2f}%[/]",
                 f"{p.weight_pct:.1f}%",
             )
         console.print(table)
@@ -369,6 +379,326 @@ def cmd_schedule(args, settings):
             console.print(f"[dim]No task '{task_name}' found[/]")
 
 
+def cmd_report_and_notify(args, settings):
+    """Run watchlist analysis, save reports, and send notifications."""
+    from stock_agents.data.trading_calendar import is_trading_day
+    from stock_agents.output.notify import send_all, build_report_email_html
+    from stock_agents.output.report_generator import generate_report
+
+    logger = logging.getLogger(__name__)
+
+    # Holiday check
+    if settings.schedule.skip_holidays and not args.force:
+        if not is_trading_day():
+            console.print("[yellow]今天不是交易日，跳过分析。[/] (use --force to override)")
+            return
+
+    # Merge held stocks into watchlist
+    csv_path = _get_csv_path(settings)
+    held = get_held_symbols(csv_path)
+    if held:
+        merged = list(dict.fromkeys(settings.watchlist + held))
+        settings.watchlist = merged
+    console.print(f"[dim]Watchlist: {', '.join(settings.watchlist)} ({len(settings.watchlist)} stocks)[/]")
+
+    # Run analysis
+    orchestrator = TradingOrchestrator(settings)
+    decisions = orchestrator.analyze_watchlist()
+
+    # Collect markdown reports and save files
+    compliance = ComplianceLogger(settings.log_dir)
+    all_reports_md = []
+    saved_paths = []
+
+    for decision in decisions:
+        print_decision(decision)
+        compliance.log_decision(decision)
+
+        md_report = generate_report(decision)
+        all_reports_md.append(md_report)
+
+        if settings.output.save_to_file:
+            path = save_report(decision, settings.report_dir)
+            saved_paths.append(path)
+
+    if saved_paths:
+        console.print(f"[dim]Reports saved to: {settings.report_dir}[/]")
+
+    # Build notification content
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    subject = f"📊 Stock Agents 每日分析报告 — {today_str}"
+
+    # Build summary line
+    symbols_summary = ", ".join(
+        f"{d.symbol}({d.action})" for d in decisions if d.action
+    )
+    body_markdown = f"# 盘前分析报告 {today_str}\n\n"
+    body_markdown += f"**分析标的:** {symbols_summary}\n\n---\n\n"
+    body_markdown += "\n\n---\n\n".join(all_reports_md)
+
+    # Build styled HTML email from individual reports
+    body_html = build_report_email_html(
+        title=f"📊 Stock Agents 每日分析报告",
+        subtitle=f"{today_str} 盘前分析 | {symbols_summary}",
+        reports_markdown=all_reports_md,
+    )
+
+    # Send notifications
+    notification_cfg = settings.schedule.notification
+    results = send_all(subject, body_markdown, body_html, notification_cfg)
+
+    if results:
+        for channel, ok in results.items():
+            status = "[green]✓[/]" if ok else "[red]✗[/]"
+            console.print(f"  {channel}: {status}")
+    else:
+        console.print("[dim]No notification channels enabled — reports saved locally only[/]")
+
+    # Summary
+    total = len(decisions)
+    buy_count = sum(1 for d in decisions if d.action and "买入" in d.action)
+    sell_count = sum(1 for d in decisions if d.action and "卖出" in d.action)
+    console.print(f"\n[bold]分析完成: {total}只股票, {buy_count}个买入信号, {sell_count}个卖出信号[/]")
+
+
+def cmd_copilot_login(args, settings):
+    """Authenticate with GitHub Copilot via OAuth device code flow."""
+    from stock_agents.llm.github_models_client import (
+        copilot_device_code_login, _resolve_github_token,
+        fetch_copilot_model_catalog, _is_classic_pat,
+    )
+
+    # Check if already authenticated AND can access Copilot API
+    token, source = _resolve_github_token()
+    if token and not _is_classic_pat(token):
+        catalog = fetch_copilot_model_catalog(token)
+        if catalog:
+            console.print(f"[green]✓ Already authenticated with Copilot access[/] (token from {source})")
+            console.print(f"  {len(catalog)} models available")
+            console.print("[dim]Use copilot-models to see the full list[/]")
+            return
+        else:
+            console.print(f"[yellow]Found token from {source}, but cannot access Copilot API.[/]")
+            console.print("[dim]Starting Copilot-specific OAuth login...[/]\n")
+
+    console.print("[bold]GitHub Copilot OAuth Login[/]")
+    console.print("This will open your browser for GitHub authentication.")
+    console.print("Your Copilot Pro subscription grants access to all models.")
+    console.print()
+
+    token = copilot_device_code_login()
+    if token:
+        # Verify the new token actually works for Copilot
+        catalog = fetch_copilot_model_catalog(token)
+        if catalog:
+            console.print(f"\n[green]✓ Authentication successful![/]")
+            console.print(f"  Token cached at: ~/.stock-agents/copilot_token.json")
+            console.print(f"  {len(catalog)} models available")
+            console.print("\n[dim]Run `python -m stock_agents copilot-models` to see available models[/]")
+        else:
+            console.print(f"\n[yellow]⚠ Token obtained but Copilot API returned no models.[/]")
+            console.print("  Your account may not have Copilot Pro enabled.")
+    else:
+        console.print("\n[red]✗ Authentication failed[/]")
+        console.print("  Try: `gh auth login` if you have the GitHub CLI installed")
+
+
+def cmd_copilot_models(args, settings):
+    """List models available under your GitHub Copilot Pro subscription."""
+    from stock_agents.llm.github_models_client import list_copilot_models
+
+    console.print("[dim]Fetching model catalog from Copilot API...[/]")
+    models = list_copilot_models()
+
+    if not models:
+        console.print("[yellow]Could not fetch model catalog.[/]")
+        console.print("  Make sure you're authenticated:")
+        console.print("  → python -m stock_agents copilot-login")
+        console.print("  → or set COPILOT_GITHUB_TOKEN / GH_TOKEN env var")
+        return
+
+    table = Table(title=f"Available Copilot Models ({len(models)})", show_header=True)
+    table.add_column("Model ID", style="cyan")
+    for mid in sorted(models):
+        table.add_row(mid)
+    console.print(table)
+    console.print(f"\n[dim]Use any of these in config.yaml → llm.model[/]")
+
+
+def cmd_debug(args, settings) -> None:
+    """Step-by-step pipeline debugger — no LLM calls by default."""
+    import json as _json
+    from stock_agents.data.data_manager import DataManager
+    from stock_agents.orchestrator import TradingOrchestrator
+
+    symbol = args.symbol
+    phase = args.phase
+    agent_name = getattr(args, "agent", None)
+
+    console.print(Rule(f"[bold cyan]DEBUG: {symbol}  phase={phase}[/]"))
+
+    # ── data ────────────────────────────────────────────────────────────────
+    if phase in ("data", "all"):
+        console.print(Rule("[yellow]Phase 1 — Raw Data[/]"))
+        data = DataManager(settings)
+
+        snap = data.get_stock_snapshot(symbol)
+        t = Table(title=f"StockSnapshot — {snap.name} ({symbol})", show_header=True)
+        t.add_column("Field", style="cyan"); t.add_column("Value", justify="right")
+        for k, v in snap.model_dump().items():
+            if k != "history":
+                t.add_row(k, str(v))
+        console.print(t)
+
+        fin = data.get_financial_data(symbol)
+        t2 = Table(title="FinancialData", show_header=True)
+        t2.add_column("Field", style="cyan"); t2.add_column("Value", justify="right")
+        for k, v in fin.model_dump().items():
+            t2.add_row(k, str(v)[:80])
+        console.print(t2)
+
+        ind = data.get_technical_indicators(symbol)
+        t3 = Table(title="TechnicalIndicators", show_header=True)
+        t3.add_column("Field", style="cyan"); t3.add_column("Value", justify="right")
+        for k, v in ind.model_dump().items():
+            t3.add_row(k, str(v)[:80])
+        console.print(t3)
+
+        news = data.get_news(symbol)
+        console.print(Panel(
+            "\n".join(f"  [{n.get('date','')}] {n.get('title','')}" for n in news[:5]),
+            title=f"News (latest 5 of {len(news)})",
+        ))
+
+        portfolio = data.get_portfolio_state()
+        t4 = Table(title="Portfolio State", show_header=True)
+        t4.add_column("Field", style="cyan"); t4.add_column("Value", justify="right")
+        t4.add_row("total_value", f"{portfolio.total_value:,.2f}")
+        t4.add_row("cash", f"{portfolio.cash:,.2f}")
+        t4.add_row("positions", str(len(portfolio.positions)))
+        for pos in portfolio.positions:
+            t4.add_row(f"  {pos.symbol}", f"{pos.shares} shares @ {pos.avg_cost:.2f}")
+        console.print(t4)
+
+    # ── quant ────────────────────────────────────────────────────────────────
+    if phase in ("quant", "all"):
+        console.print(Rule("[yellow]Phase 0 — Quant Engine[/]"))
+        orch = TradingOrchestrator(settings)
+        signals = orch._run_quant_engine(symbol)
+        for section, vals in signals.items():
+            if isinstance(vals, dict):
+                t = Table(title=section, show_header=True, show_lines=False)
+                t.add_column("Key", style="cyan"); t.add_column("Value", justify="right")
+                for k, v in vals.items():
+                    if k == "signal":
+                        color = "green" if v == "BUY" else "red" if v == "SELL" else "yellow"
+                        t.add_row(k, f"[{color}]{v}[/]")
+                    else:
+                        t.add_row(k, str(v)[:80])
+                console.print(t)
+
+    # ── prompt ───────────────────────────────────────────────────────────────
+    if phase in ("prompt", "all"):
+        console.print(Rule("[yellow]Phase 2 — Agent Prompts (no LLM call)[/]"))
+        from stock_agents.agents.fundamental_analyst import FundamentalAnalyst
+        from stock_agents.agents.technical_analyst import TechnicalAnalyst
+        from stock_agents.agents.sentiment_analyst import SentimentAnalyst
+        from stock_agents.agents.research_bull import BullResearcher
+        from stock_agents.agents.research_bear import BearResearcher
+        from stock_agents.agents.quant_trader import QuantTrader
+        from stock_agents.agents.risk_manager import RiskManager
+
+        data = DataManager(settings)
+        orch = TradingOrchestrator(settings)
+        quant_signals = orch._run_quant_engine(symbol)
+        ctx = {"portfolio": data.get_portfolio_state().model_dump(), "quant_signals": quant_signals}
+
+        class _MockLLM:
+            model_label = "mock (debug)"
+            def analyze(self, *a, **kw): return {}
+
+        agent_map = {
+            "fundamental": FundamentalAnalyst(_MockLLM(), data),
+            "technical": TechnicalAnalyst(_MockLLM(), data),
+            "sentiment": SentimentAnalyst(_MockLLM(), data),
+            "bull": BullResearcher(_MockLLM(), data),
+            "bear": BearResearcher(_MockLLM(), data),
+            "quant": QuantTrader(_MockLLM(), data),
+            "risk": RiskManager(_MockLLM(), data),
+        }
+        target = {agent_name: agent_map[agent_name]} if agent_name and agent_name in agent_map else agent_map
+
+        for name, agent in target.items():
+            sys_prompt = agent.get_system_prompt()
+            gathered = agent.gather_data(symbol, ctx)
+            user_msg = f"Analyze stock: {symbol}\n\nData:\n{_json.dumps(gathered, ensure_ascii=False, default=str, indent=2)}"
+            console.print(Rule(f"[bold]{name}[/] — system prompt ({len(sys_prompt)} chars)"))
+            console.print(Panel(sys_prompt[:1200] + ("…" if len(sys_prompt) > 1200 else ""), title="System Prompt", border_style="dim"))
+            console.print(Rule(f"[bold]{name}[/] — user message ({len(user_msg)} chars)"))
+            console.print(Panel(user_msg[:2000] + ("…" if len(user_msg) > 2000 else ""), title="User Message", border_style="dim"))
+
+    # ── agent ────────────────────────────────────────────────────────────────
+    if phase == "agent":
+        if not agent_name:
+            console.print("[red]--agent is required for --phase agent[/]"); return
+        console.print(Rule(f"[yellow]Single Agent Run — {agent_name} (real LLM call)[/]"))
+        from stock_agents.agents.fundamental_analyst import FundamentalAnalyst
+        from stock_agents.agents.technical_analyst import TechnicalAnalyst
+        from stock_agents.agents.sentiment_analyst import SentimentAnalyst
+        from stock_agents.agents.research_bull import BullResearcher
+        from stock_agents.agents.research_bear import BearResearcher
+        from stock_agents.agents.quant_trader import QuantTrader
+        from stock_agents.agents.risk_manager import RiskManager
+
+        data = DataManager(settings)
+        orch = TradingOrchestrator(settings)
+        quant_signals = orch._run_quant_engine(symbol)
+        ctx = {"portfolio": data.get_portfolio_state().model_dump(), "quant_signals": quant_signals}
+        llm = TradingOrchestrator._build_llm(settings, settings.llm.model)
+
+        agent_cls_map = {
+            "fundamental": FundamentalAnalyst, "technical": TechnicalAnalyst,
+            "sentiment": SentimentAnalyst, "bull": BullResearcher,
+            "bear": BearResearcher, "quant": QuantTrader, "risk": RiskManager,
+        }
+        cls = agent_cls_map.get(agent_name)
+        if not cls:
+            console.print(f"[red]Unknown agent: {agent_name}[/]"); return
+
+        agent = cls(llm, data)
+        console.print(f"[dim]Running {agent.name}...[/]")
+        report = agent.analyze(symbol, ctx)
+        t = Table(title=f"{agent.name} Report", show_header=True)
+        t.add_column("Field", style="cyan"); t.add_column("Value")
+        sig_color = "green" if report.signal == "BUY" else "red" if report.signal == "SELL" else "yellow"
+        t.add_row("signal", f"[{sig_color}]{report.signal}[/]")
+        t.add_row("score", f"{report.score:.1f}/10")
+        t.add_row("confidence", f"{report.confidence:.0%}")
+        t.add_row("key_factors", "\n".join(f"• {f}" for f in report.key_factors))
+        t.add_row("risks", "\n".join(f"• {r}" for r in report.risks))
+        console.print(t)
+        console.print(Panel(report.reasoning, title="Reasoning", border_style="blue"))
+
+    # ── full ─────────────────────────────────────────────────────────────────
+    if phase == "full":
+        console.print(Rule("[yellow]Full Pipeline (verbose, real LLM calls)[/]"))
+        import asyncio
+        orch = TradingOrchestrator(settings)
+        decision = asyncio.run(orch.analyze_stock_async(symbol))
+        from stock_agents.output.formatters import print_decision
+        print_decision(decision)
+        console.print(Panel(
+            _json.dumps({
+                "action": decision.action, "confidence": decision.confidence,
+                "position_size_pct": f"{decision.position_size_pct:.1%}",
+                "position_size_shares": decision.position_size_shares,
+                "target_price": decision.target_price, "stop_loss": decision.stop_loss,
+                "llm_model": decision.llm_model,
+            }, indent=2, ensure_ascii=False),
+            title="Decision JSON", border_style="green",
+        ))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="stock_agents",
@@ -381,7 +711,7 @@ def main():
 
     # analyze
     p_analyze = sub.add_parser("analyze", help="Analyze a single stock")
-    p_analyze.add_argument("symbol", help="Stock code (e.g., 600519)")
+    p_analyze.add_argument("symbol", default="600519", help="Stock code (e.g., 600519)")
     p_analyze.add_argument(
         "--horizon", choices=["short", "mid", "long", "all"],
         default=None,
@@ -429,10 +759,56 @@ def main():
     p_plan = sub.add_parser("copilot-plan", help="Generate premarket action plan")
     p_plan.add_argument("--save-plan", action="store_true", help="Save plan to reports dir")
 
-    # schedule
+    # schedule (Windows)
     p_sched = sub.add_parser("schedule", help="Schedule daily premarket analysis (Windows)")
     p_sched.add_argument("action", choices=["install", "remove", "status"])
     p_sched.add_argument("--time", default="09:00", help="Run time HH:MM (default: 09:00)")
+
+    # report-and-notify (cross-platform, used by GitHub Actions / cron)
+    p_report = sub.add_parser(
+        "report-and-notify",
+        help="Run watchlist analysis + save reports + send notifications",
+    )
+    p_report.add_argument(
+        "--force", action="store_true",
+        help="Run even if today is not a trading day",
+    )
+
+    # debug
+    p_debug = sub.add_parser(
+        "debug",
+        help="Step-by-step pipeline debugger (no LLM by default)",
+    )
+    p_debug.add_argument("symbol", help="Stock code (e.g., 600711)")
+    p_debug.add_argument(
+        "--phase",
+        choices=["data", "quant", "prompt", "agent", "full", "all"],
+        default="all",
+        help="data/quant/prompt=no LLM  agent/full=real LLM  all=data+quant+prompt (default)",
+    )
+    p_debug.add_argument(
+        "--agent",
+        choices=["fundamental", "technical", "sentiment", "bull", "bear", "quant", "risk"],
+        default=None,
+        help="Filter to one agent (for --phase prompt or agent)",
+    )
+
+    # copilot-login
+    sub.add_parser(
+        "copilot-login",
+        help="Authenticate with GitHub Copilot via OAuth (browser-based)",
+    )
+
+    # copilot-models
+    sub.add_parser(
+        "copilot-models",
+        help="List models available under your Copilot Pro subscription",
+    )
+
+    # When run directly from VSCode with no args, default to: debug 600711 --phase all
+    if len(sys.argv) == 1:
+        # sys.argv += ["debug", "600711", "--phase", "all"]
+        sys.argv += ["debug", "600711", "--phase", "agent", "--agent", "fundamental"]
 
     args = parser.parse_args()
     setup_logging(args.verbose)
@@ -450,6 +826,10 @@ def main():
         "config": cmd_config,
         "copilot-plan": cmd_copilot_plan,
         "schedule": cmd_schedule,
+        "report-and-notify": cmd_report_and_notify,
+        "debug": cmd_debug,
+        "copilot-login": cmd_copilot_login,
+        "copilot-models": cmd_copilot_models,
     }
 
     cmd_fn = commands.get(args.command)

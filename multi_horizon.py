@@ -37,7 +37,7 @@ from stock_agents.models.signals import (
     FinalDecision,
     MultiHorizonDecision,
 )
-from stock_agents.orchestrator import TradingOrchestrator
+from stock_agents.orchestrator import TradingOrchestrator, build_quant_data, get_agent_llm
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,10 @@ class MultiHorizonOrchestrator:
         self.data = DataManager(settings, account_client=account_client)
         self.horizons = horizons or ALL_HORIZONS
 
-        # Build LLM clients (shared across all horizons — same model)
+        # Per-agent LLM cache — shared across horizons (same model = same client)
+        self._llm_cache: dict[str, object] = {}
+
+        # Build default LLM clients (backwards compat for attributes)
         self.llm = TradingOrchestrator._build_llm(settings, settings.llm.model)
         self.llm_final = TradingOrchestrator._build_llm(settings, settings.llm.model_final)
 
@@ -120,53 +123,23 @@ class MultiHorizonOrchestrator:
 
         # Base agents (will be wrapped per-horizon)
         self._base_agents = {
-            "fundamental": FundamentalAnalyst(self.llm, self.data),
-            "technical": TechnicalAnalyst(self.llm, self.data),
-            "sentiment": SentimentAnalyst(self.llm, self.data),
-            "bull": BullResearcher(self.llm, self.data),
-            "bear": BearResearcher(self.llm, self.data),
-            "quant": QuantTrader(self.llm, self.data),
-            "risk": RiskManager(self.llm, self.data),
+            "fundamental": FundamentalAnalyst(self._agent_llm("fundamental"), self.data),
+            "technical": TechnicalAnalyst(self._agent_llm("technical"), self.data),
+            "sentiment": SentimentAnalyst(self._agent_llm("sentiment"), self.data),
+            "bull": BullResearcher(self._agent_llm("bull"), self.data),
+            "bear": BearResearcher(self._agent_llm("bear"), self.data),
+            "quant": QuantTrader(self._agent_llm("quant"), self.data),
+            "risk": RiskManager(self._agent_llm("risk"), self.data),
         }
-        self._base_fund_manager = FundManager(self.llm_final, self.data)
+        self._base_fund_manager = FundManager(self._agent_llm("fund_manager", is_final=True), self.data)
+
+    def _agent_llm(self, agent_type: str, is_final: bool = False):
+        """Get LLM client for an agent, respecting per-agent model overrides."""
+        return get_agent_llm(self.settings, self._llm_cache, agent_type, is_final)
 
     def _build_quant_data(self, symbol: str) -> dict:
         """Collect raw data needed by the quant engine."""
-        snapshot = self.data.get_stock_snapshot(symbol)
-        financials = self.data.get_financial_data(symbol)
-        indicators = self.data.get_technical_indicators(symbol)
-        risk_metrics = self.data.get_risk_metrics(symbol)
-        portfolio = self.data.get_portfolio_state()
-
-        ind_dict = indicators.model_dump() if hasattr(indicators, "model_dump") else {}
-        fin_dict = {
-            "pe_ratio": snapshot.pe_ratio,
-            "pb_ratio": snapshot.pb_ratio,
-            "roe": financials.roe,
-            "gross_margin": financials.gross_margin,
-            "net_margin": financials.net_margin,
-            "revenue_growth": financials.revenue_growth,
-            "profit_growth": financials.profit_growth,
-            "debt_to_equity": financials.debt_to_equity,
-            "operating_cash_flow": financials.operating_cash_flow,
-            "net_profit": financials.net_profit,
-            "eps": financials.eps,
-        }
-        positions_data = [
-            {"symbol": pos.symbol, "weight_pct": pos.weight_pct}
-            for pos in portfolio.positions
-        ]
-
-        return {
-            "indicators": ind_dict,
-            "financials": fin_dict,
-            "risk_metrics": risk_metrics,
-            "current_price": snapshot.current_price,
-            "market_cap": snapshot.market_cap,
-            "portfolio_value": portfolio.total_value,
-            "portfolio_positions": positions_data,
-            "atr": indicators.atr_14,
-        }
+        return build_quant_data(self.data, symbol)
 
     def _run_quant_for_horizon(self, quant_data: dict, hcfg: HorizonConfig) -> dict:
         """Run quant engine with horizon-specific parameters."""
@@ -222,10 +195,10 @@ class MultiHorizonOrchestrator:
             for name, agent in self._base_agents.items()
         }
 
-        async def safe_analyze(agent, name: str, ctx_: dict) -> AgentReport:
+        async def safe_analyze(agent, name: str, ctx_: dict) -> AgentReport | None:
+            """Run one agent — returns None on failure (no fake defaults)."""
             try:
                 async with self._llm_semaphore:
-                    # Small delay between consecutive calls to ease rate limits
                     await asyncio.sleep(2)
                     report = await agent.analyze_async(symbol, ctx_)
                 logger.info("  %s [%s] Signal=%s Score=%.1f",
@@ -233,45 +206,59 @@ class MultiHorizonOrchestrator:
                 return report
             except Exception as e:
                 logger.error("  %s [%s] FAILED: %s", tag, name, e)
-                return AgentReport(
-                    agent_name=name, agent_role="analyst",
-                    symbol=symbol, reasoning=f"Analysis failed: {e}",
-                    confidence=0.0,
-                )
+                return None
 
         # Phase 2: Core analysts in parallel
-        reports: list[AgentReport] = list(await asyncio.gather(
+        phase2_results = await asyncio.gather(
             safe_analyze(agents["fundamental"], "fundamental", ctx),
             safe_analyze(agents["technical"], "technical", ctx),
             safe_analyze(agents["sentiment"], "sentiment", ctx),
-        ))
+        )
+        reports: list[AgentReport] = [r for r in phase2_results if r is not None]
+        logger.info("  %s Phase2: %d/3 agents succeeded", tag, len(reports))
+        if not reports:
+            raise RuntimeError(f"{tag} All Phase 2 agents failed for {symbol}")
 
         # Phase 3: Bull/Bear debate in parallel
         ctx3 = {"prior_reports": reports, **ctx}
-        bull_report, bear_report = await asyncio.gather(
+        bull_result, bear_result = await asyncio.gather(
             safe_analyze(agents["bull"], "bull", ctx3),
             safe_analyze(agents["bear"], "bear", ctx3),
         )
-        reports.extend([bull_report, bear_report])
 
-        net_conviction = (bull_report.score - bear_report.score) / 10.0
-        debate = DebateReport(
-            symbol=symbol,
-            bull_thesis=bull_report.reasoning,
-            bear_thesis=bear_report.reasoning,
-            bull_score=bull_report.score,
-            bear_score=bear_report.score,
-            synthesis=f"Bull={bull_report.score}/10, Bear={bear_report.score}/10",
-            net_conviction=net_conviction,
-        )
+        debate: DebateReport | None = None
+        if bull_result and bear_result:
+            reports.extend([bull_result, bear_result])
+            net_conviction = (bull_result.score - bear_result.score) / 10.0
+            debate = DebateReport(
+                symbol=symbol,
+                bull_thesis=bull_result.reasoning,
+                bear_thesis=bear_result.reasoning,
+                bull_score=bull_result.score,
+                bear_score=bear_result.score,
+                synthesis=f"Bull={bull_result.score}/10, Bear={bear_result.score}/10",
+                net_conviction=net_conviction,
+            )
+        else:
+            logger.warning("  %s Phase3 debate incomplete", tag)
+            if bull_result:
+                reports.append(bull_result)
+            if bear_result:
+                reports.append(bear_result)
 
         # Phase 4: Quant + Risk (sequential)
-        ctx4 = {"prior_reports": reports, "debate_report": debate.model_dump(), **ctx}
+        ctx4 = {"prior_reports": reports, "debate_report": debate.model_dump() if debate else {}, **ctx}
         quant_report = await safe_analyze(agents["quant"], "QuantTrader", ctx4)
-        reports.append(quant_report)
+        if quant_report:
+            reports.append(quant_report)
+        else:
+            logger.warning("  %s [QuantTrader] FAILED", tag)
         ctx4["prior_reports"] = reports
         risk_report = await safe_analyze(agents["risk"], "RiskManager", ctx4)
-        reports.append(risk_report)
+        if risk_report:
+            reports.append(risk_report)
+        else:
+            logger.warning("  %s [RiskManager] FAILED", tag)
 
         # Phase 5: Fund manager decision
         horizon_fm = _HorizonFundManager(self._base_fund_manager, hcfg)
@@ -347,7 +334,8 @@ class MultiHorizonOrchestrator:
     def _compute_consensus(self, decisions: dict[Horizon, FinalDecision]) -> dict:
         """Derive consensus from the three horizon decisions."""
         actions = [d.action for d in decisions.values() if d.action]
-        confidences = [d.confidence for d in decisions.values() if d.confidence > 0]
+        confidences = [d.confidence for d in decisions.values()
+                       if d.confidence is not None and d.confidence > 0]
 
         buy_count = actions.count("BUY")
         sell_count = actions.count("SELL")
@@ -364,14 +352,15 @@ class MultiHorizonOrchestrator:
         else:
             consensus_action = "HOLD"
 
-        avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+        avg_conf = sum(confidences) / len(confidences) if confidences else None
 
         # Build summary
         parts = []
         for horizon, decision in decisions.items():
             hcfg = get_horizon_config(horizon)
+            conf_str = f"{decision.confidence:.0%}" if decision.confidence is not None else "N/A"
             parts.append(f"{hcfg.label_cn}({hcfg.label}): {decision.action} "
-                        f"(置信度{decision.confidence:.0%})")
+                        f"(置信度{conf_str})")
 
         agreement = "一致" if len(set(actions)) == 1 else "分歧"
         summary = (
@@ -381,7 +370,7 @@ class MultiHorizonOrchestrator:
 
         return {
             "consensus_action": consensus_action,
-            "consensus_confidence": round(avg_conf, 2),
+            "consensus_confidence": round(avg_conf, 2) if avg_conf is not None else None,
             "consensus_summary": summary,
         }
 

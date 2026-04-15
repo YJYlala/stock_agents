@@ -24,7 +24,7 @@ import ssl
 import time
 import urllib.request
 
-from pydantic import BaseModel
+from stock_agents.llm.base_client import BaseLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def _fetch_hp_uid_token() -> str:
     raise ValueError("Failed to fetch HP UID token after 3 retries")
 
 
-class AzureOpenAILLMClient:
+class AzureOpenAILLMClient(BaseLLMClient):
     """LLM client for Azure OpenAI deployments (GPT-4o, GPT-5.4, etc.)."""
 
     def __init__(
@@ -155,7 +155,6 @@ class AzureOpenAILLMClient:
         if not self._use_bearer:
             return
         try:
-            import httpx
             bearer_token = _fetch_hp_uid_token()
             self.client._custom_headers["Authorization"] = f"Bearer {bearer_token}"
         except Exception as e:
@@ -164,12 +163,10 @@ class AzureOpenAILLMClient:
     @staticmethod
     def _get_cert_path() -> str | None:
         """Locate the HP corporate CA cert bundle."""
-        # First: cert copied locally to stock_agents package dir
         local = os.path.join(os.path.dirname(__file__), "..", "ca-certifacates.crt")
         local = os.path.normpath(local)
         if os.path.isfile(local):
             return local
-        # Second: Genai-DocAI source location
         sibling = os.path.join(
             os.path.dirname(__file__), "..", "..", "Genai-DocAI",
             "src", "doc_agent", "ca-certifacates.crt",
@@ -177,7 +174,6 @@ class AzureOpenAILLMClient:
         sibling = os.path.normpath(sibling)
         if os.path.isfile(sibling):
             return sibling
-        # Third: importlib (if doc_agent is installed)
         try:
             import importlib.resources
             cert = importlib.resources.files("doc_agent").joinpath("ca-certifacates.crt")
@@ -185,7 +181,6 @@ class AzureOpenAILLMClient:
                 return str(p)
         except Exception:
             pass
-        # Last: certifi
         try:
             import certifi
             return certifi.where()
@@ -193,100 +188,15 @@ class AzureOpenAILLMClient:
             pass
         return None
 
-    def analyze(
-        self,
-        system_prompt: str,
-        user_message: str,
-        output_schema: type[BaseModel] | None = None,
-        max_retries: int = 5,
-    ) -> dict | str:
-        """Call Azure OpenAI with retry. Same interface as other LLM clients."""
+    def _call_llm(self, system_prompt: str, user_message: str) -> str:
         self._refresh_bearer_if_needed()
-
-        schema_instruction = ""
-        if output_schema:
-            schema = output_schema.model_json_schema()
-            props = schema.get("properties", {})
-            example_fields = {}
-            for field_name, field_info in props.items():
-                field_type = field_info.get("type", "string")
-                if field_name in ("agent_name", "agent_role", "symbol", "timestamp", "data_used"):
-                    continue
-                if field_type == "number":
-                    example_fields[field_name] = 0.0
-                elif field_type == "integer":
-                    example_fields[field_name] = 0
-                elif field_type == "array":
-                    example_fields[field_name] = ["item1", "item2"]
-                elif field_type == "boolean":
-                    example_fields[field_name] = True
-                else:
-                    example_fields[field_name] = "..."
-            example_json = json.dumps(example_fields, indent=2, ensure_ascii=False)
-            schema_instruction = (
-                f"\n\nYou MUST respond with a JSON object containing these fields:\n"
-                f"```json\n{example_json}\n```\n"
-                "Fill in ALL fields with your actual analysis. "
-                "Output ONLY the JSON object, no markdown fences, no extra text. "
-                "For 'signal' use one of: BUY, SELL, HOLD. "
-                "For 'score' use 0-10. For 'confidence' use 0.0-1.0. "
-                "For 'reasoning' provide detailed analysis. "
-                "For 'key_factors' and 'risks' provide lists of strings."
-            )
-
-        full_system = system_prompt + schema_instruction
-        text = ""
-
-        for attempt in range(max_retries):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.deployment,
-                    max_completion_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    messages=[
-                        {"role": "system", "content": full_system},
-                        {"role": "user", "content": user_message},
-                    ],
-                )
-                text = (response.choices[0].message.content or "").strip()
-
-                if output_schema:
-                    if text.startswith("```"):
-                        lines = text.split("\n")
-                        lines = [l for l in lines if not l.startswith("```")]
-                        text = "\n".join(lines).strip()
-                    return json.loads(text)
-
-                return text
-
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    "JSON parse failed (attempt %d/%d): %s",
-                    attempt + 1, max_retries, e,
-                )
-                if attempt == max_retries - 1:
-                    logger.error(
-                        "Failed to parse JSON after %d attempts, returning raw text",
-                        max_retries,
-                    )
-                    return text
-                time.sleep(1)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "rate" in err_str or "429" in err_str:
-                    wait = 20 * (attempt + 1)
-                    logger.warning(
-                        "Rate limited, waiting %ds (attempt %d/%d)",
-                        wait, attempt + 1, max_retries,
-                    )
-                    time.sleep(wait)
-                else:
-                    logger.error(
-                        "LLM call failed (attempt %d/%d): %s",
-                        attempt + 1, max_retries, e,
-                    )
-                    if attempt == max_retries - 1:
-                        raise
-                    time.sleep(2 ** attempt)
-
-        raise RuntimeError(f"LLM call failed after {max_retries} retries")
+        response = self.client.chat.completions.create(
+            model=self.deployment,
+            max_completion_tokens=self.max_tokens,
+            temperature=self.temperature,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()

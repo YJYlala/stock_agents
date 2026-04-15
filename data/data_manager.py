@@ -3,7 +3,7 @@
 import logging
 
 from stock_agents.config.settings import Settings
-from stock_agents.data.akshare_client import AKShareClient
+from stock_agents.data.akshare_client import AKShareClient, _safe_float
 from stock_agents.data.cache import DataCache
 from stock_agents.data.csv_portfolio import load_portfolio, get_trade_history
 from stock_agents.indicators.technical import compute_all_indicators
@@ -47,16 +47,17 @@ class DataManager:
                 history.append(OHLCVBar(
                     date=row["date"], open=row["open"], high=row["high"],
                     low=row["low"], close=row["close"],
-                    volume=int(row["volume"]), amount=float(row["amount"]),
+                    volume=int(row["volume"]),
+                    amount=_safe_float(row.get("amount")),
                 ))
 
         snapshot = StockSnapshot(
             symbol=symbol,
             name=quote.get("name", ""),
             exchange="SH" if symbol.startswith("6") else "SZ",
-            current_price=quote.get("current_price", history[-1].close if history else 0),
-            change_pct=quote.get("change_pct", 0),
-            market_cap=quote.get("market_cap", 0),
+            current_price=quote.get("current_price") or (history[-1].close if history else None),
+            change_pct=quote.get("change_pct"),
+            market_cap=quote.get("market_cap"),
             pe_ratio=quote.get("pe_ratio"),
             pb_ratio=quote.get("pb_ratio"),
             history=history,
@@ -75,46 +76,51 @@ class DataManager:
 
         # Try to get income statement for revenue/profit trends
         income_df = self.akshare.get_income_statement(symbol)
-        revenue_list = []
-        profit_list = []
-        report_dates = []
+        revenue_list: list[float] = []
+        profit_list: list[float] = []
+        report_dates: list[str] = []
         if not income_df.empty:
             for _, row in income_df.head(self.settings.analysis.financial_quarters).iterrows():
-                rev = row.get("营业收入", row.get("一、营业总收入", 0))
-                profit = row.get("净利润", row.get("五、净利润", 0))
-                revenue_list.append(float(rev or 0))
-                profit_list.append(float(profit or 0))
+                rev = _safe_float(row.get("营业收入", row.get("一、营业总收入")))
+                profit = _safe_float(row.get("净利润", row.get("五、净利润")))
+                if rev is not None:
+                    revenue_list.append(rev)
+                if profit is not None:
+                    profit_list.append(profit)
                 date_val = row.get("报告日", row.get("报告期", ""))
                 report_dates.append(str(date_val))
 
         # Balance sheet
         bs_df = self.akshare.get_balance_sheet(symbol)
-        total_assets = 0.0
-        total_liabilities = 0.0
-        total_equity = 0.0
+        total_assets: float | None = None
+        total_liabilities: float | None = None
+        total_equity: float | None = None
         if not bs_df.empty:
             latest = bs_df.iloc[0]
-            total_assets = float(latest.get("资产总计", 0) or 0)
-            total_liabilities = float(latest.get("负债合计", 0) or 0)
-            total_equity = float(latest.get("所有者权益(或股东权益)合计", total_assets - total_liabilities) or 0)
+            total_assets = _safe_float(latest.get("资产总计"))
+            total_liabilities = _safe_float(latest.get("负债合计"))
+            eq_val = _safe_float(latest.get("所有者权益(或股东权益)合计"))
+            if eq_val is not None:
+                total_equity = eq_val
+            elif total_assets is not None and total_liabilities is not None:
+                total_equity = total_assets - total_liabilities
 
         # Cash flow
         cf_df = self.akshare.get_cash_flow(symbol)
-        ocf_list = []
+        ocf_list: list[float] = []
         if not cf_df.empty:
             for _, row in cf_df.head(self.settings.analysis.financial_quarters).iterrows():
-                ocf = row.get("经营活动产生的现金流量净额", 0)
-                ocf_list.append(float(ocf or 0))
+                ocf = _safe_float(row.get("经营活动产生的现金流量净额"))
+                if ocf is not None:
+                    ocf_list.append(ocf)
 
-        # Growth rates
-        rev_growth = 0.0
+        # Growth rates — only compute when data is available
+        rev_growth: float | None = None
         if len(revenue_list) >= 2 and revenue_list[1] != 0:
             rev_growth = (revenue_list[0] - revenue_list[1]) / abs(revenue_list[1]) * 100
-        profit_growth = 0.0
+        profit_growth: float | None = None
         if len(profit_list) >= 2 and profit_list[1] != 0:
             profit_growth = (profit_list[0] - profit_list[1]) / abs(profit_list[1]) * 100
-
-        d_e = metrics.get("debt_to_equity", 0)
 
         data = FinancialData(
             symbol=symbol,
@@ -124,11 +130,11 @@ class DataManager:
             total_liabilities=total_liabilities,
             total_equity=total_equity,
             operating_cash_flow=ocf_list,
-            eps=metrics.get("eps", 0),
-            roe=metrics.get("roe", 0),
-            debt_to_equity=d_e,
-            gross_margin=metrics.get("gross_margin", 0),
-            net_margin=metrics.get("net_margin", 0),
+            eps=metrics.get("eps"),
+            roe=metrics.get("roe"),
+            debt_to_equity=metrics.get("debt_to_equity"),
+            gross_margin=metrics.get("gross_margin"),
+            net_margin=metrics.get("net_margin"),
             revenue_growth=rev_growth,
             profit_growth=profit_growth,
             report_dates=report_dates,
@@ -168,6 +174,16 @@ class DataManager:
         self.cache.set(cache_key, trades)
         return trades
 
+    def get_announcements(self, symbol: str) -> list[dict]:
+        """Get recent company announcements (公告)."""
+        cache_key = f"announcements_{symbol}"
+        cached = self.cache.get(cache_key)
+        if cached:
+            return cached
+        items = self.akshare.get_announcements(symbol)
+        self.cache.set(cache_key, items)
+        return items
+
     def get_risk_metrics(self, symbol: str) -> dict:
         """Compute risk metrics for a stock."""
         hist_df = self.akshare.get_stock_history(symbol, self.settings.analysis.lookback_days)
@@ -187,7 +203,7 @@ class DataManager:
             for pos in raw.positions:
                 try:
                     snap = self.get_stock_snapshot(pos.symbol)
-                    if snap.current_price > 0:
+                    if snap.current_price is not None and snap.current_price > 0:
                         price_lookup[pos.symbol] = snap.current_price
                 except Exception:
                     pass

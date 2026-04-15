@@ -13,6 +13,10 @@ from stock_agents.models.signals import AgentReport
 logger = logging.getLogger(__name__)
 
 
+class AgentAnalysisError(ValueError):
+    """Raised when the LLM fails to return a valid structured AgentReport."""
+
+
 class BaseAgent(ABC):
     """Abstract base class for all agents."""
 
@@ -32,17 +36,23 @@ class BaseAgent(ABC):
         """Collect all data this agent needs."""
 
     def analyze(self, symbol: str, context: dict | None = None) -> AgentReport:
-        """Run full analysis: gather data -> LLM -> parse report."""
+        """Run full analysis: gather data -> LLM -> parse report.
+
+        Raises AgentAnalysisError if the LLM returns an unparseable or empty result.
+        Never returns a default/fallback report — callers must handle the exception.
+        """
         logger.info("[%s] Analyzing %s...", self.name, symbol)
 
         # Gather data
         data = self.gather_data(symbol, context)
 
         # Format user message
-        user_msg = f"Analyze stock: {symbol}\n\nData:\n{json.dumps(data, ensure_ascii=False, default=str, indent=2)}"
+        user_msg = (
+            f"Analyze stock: {symbol}\n\nData:\n"
+            f"{json.dumps(data, ensure_ascii=False, default=str, indent=2)}"
+        )
 
         if context:
-            # Add prior agent reports as context
             prior_reports = context.get("prior_reports", [])
             if prior_reports:
                 user_msg += "\n\nPrior agent reports:\n"
@@ -68,34 +78,39 @@ class BaseAgent(ABC):
             if trade_history:
                 user_msg += f"\n\nTrade History:\n{json.dumps(trade_history, ensure_ascii=False, default=str, indent=2)}"
 
-        # Call LLM
+        # Call LLM — propagate any LLM-level errors (rate limit, network, etc.)
         result = self.llm.analyze(
             system_prompt=self.get_system_prompt(),
             user_message=user_msg,
             output_schema=AgentReport,
         )
 
-        # Parse result
-        if isinstance(result, dict):
+        # Parse structured result
+        if isinstance(result, dict) and result:
             logger.debug("[%s] LLM returned dict with keys: %s", self.name, list(result.keys()))
             result.setdefault("agent_name", self.name)
             result.setdefault("agent_role", self.role)
             result.setdefault("symbol", symbol)
             result.setdefault("timestamp", datetime.now().isoformat())
-            result["data_used"] = data  # always store raw data for report transparency
+            result["data_used"] = data
             try:
-                return AgentReport(**result)
+                report = AgentReport(**result)
+                # Require at least a real reasoning string — not blank
+                if not report.reasoning.strip():
+                    raise AgentAnalysisError(
+                        f"[{self.name}] LLM returned empty 'reasoning' for {symbol}"
+                    )
+                return report
+            except AgentAnalysisError:
+                raise
             except Exception as e:
-                logger.warning("[%s] Failed to parse report: %s", self.name, e)
+                raise AgentAnalysisError(
+                    f"[{self.name}] Failed to construct AgentReport for {symbol}: {e} | raw={result}"
+                ) from e
 
-        # Fallback
-        return AgentReport(
-            agent_name=self.name,
-            agent_role=self.role,
-            symbol=symbol,
-            reasoning=str(result) if result else "Analysis unavailable",
-            confidence=0.0,
-            data_used=data,
+        raise AgentAnalysisError(
+            f"[{self.name}] LLM returned no usable result for {symbol} "
+            f"(type={type(result).__name__}, value={str(result)[:200]})"
         )
 
     async def analyze_async(self, symbol: str, context: dict | None = None) -> AgentReport:

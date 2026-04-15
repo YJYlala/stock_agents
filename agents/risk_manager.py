@@ -50,4 +50,5 @@ class RiskManager(BaseAgent):
             # Pre-computed risk signal (Taleb + Markowitz framework)
             "risk_signal": context.get("quant_signals", {}).get("risk_signal", {}) if context else {},
             "quant_signal": context.get("quant_signals", {}).get("quant_signal", {}) if context else {},
+            "market_context": context.get("market_context", {}) if context else {},
         }

@@ -123,7 +123,8 @@ def print_multi_horizon_decision(mhd: MultiHorizonDecision) -> None:
     console.print()
     console.print(Panel(
         f"[bold {consensus_color}]综合建议: {mhd.consensus_action}[/]  "
-        f"置信度: {mhd.consensus_confidence:.0%}  |  当前价: {mhd.current_price:.2f}",
+        f"置信度: {(mhd.consensus_confidence or 0):.0%}  |  当前价: {mhd.current_price:.2f}" if mhd.current_price else
+        f"置信度: {(mhd.consensus_confidence or 0):.0%}",
         title=f"[bold]🔬 {mhd.name} ({mhd.symbol}) — 三周期分析[/]",
         subtitle=f"{mhd.timestamp.strftime('%Y-%m-%d %H:%M')}",
         border_style=consensus_color,

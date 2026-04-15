@@ -64,4 +64,6 @@ class QuantTrader(BaseAgent):
             if "debate_report" in context:
                 data["debate_summary"] = context["debate_report"]
 
+        if context and "market_context" in context:
+            data["market_context"] = context["market_context"]
         return data
