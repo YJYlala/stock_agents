@@ -44,6 +44,12 @@ class BearResearcher(BaseAgent):
             },
         }
 
+        # Include pre-computed quant signals for bear analysis
+        if context and "quant_signals" in context:
+            data["fundamental_signal"] = context["quant_signals"].get("fundamental_signal", {})
+            data["technical_signal"] = context["quant_signals"].get("technical_signal", {})
+            data["risk_signal"] = context["quant_signals"].get("risk_signal", {})
+
         # Include prior reports summaries for synthesis
         if context and "prior_reports" in context:
             summaries = []
@@ -57,4 +63,10 @@ class BearResearcher(BaseAgent):
                     })
             data["prior_analyst_signals"] = summaries
 
+        if context and "market_context" in context:
+            data["market_context"] = context["market_context"]
+        if context and "curated_news" in context:
+            data["curated_news"] = context["curated_news"]
+        if context and "announcements" in context:
+            data["announcements"] = context["announcements"]
         return data

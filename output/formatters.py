@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from stock_agents.models.signals import FinalDecision
+from stock_agents.models.signals import FinalDecision, MultiHorizonDecision
 
 # Force UTF-8 output to avoid GBK encoding errors on Windows
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -107,6 +107,139 @@ def print_watchlist_summary(decisions: list[FinalDecision]) -> None:
             f"{d.sentiment_score:.1f}",
             f"{d.target_price:.2f}" if d.target_price else "-",
             f"{d.stop_loss:.2f}" if d.stop_loss else "-",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def print_multi_horizon_decision(mhd: MultiHorizonDecision) -> None:
+    """Print a multi-horizon decision with side-by-side comparison."""
+    # Header
+    consensus_color = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}.get(
+        mhd.consensus_action, "white"
+    )
+    console.print()
+    console.print(Panel(
+        f"[bold {consensus_color}]综合建议: {mhd.consensus_action}[/]  "
+        f"置信度: {(mhd.consensus_confidence or 0):.0%}  |  当前价: {mhd.current_price:.2f}" if mhd.current_price else
+        f"置信度: {(mhd.consensus_confidence or 0):.0%}",
+        title=f"[bold]🔬 {mhd.name} ({mhd.symbol}) — 三周期分析[/]",
+        subtitle=f"{mhd.timestamp.strftime('%Y-%m-%d %H:%M')}",
+        border_style=consensus_color,
+    ))
+
+    # Three-column comparison table
+    table = Table(
+        title="短线 vs 中线 vs 长线",
+        show_header=True, header_style="bold",
+        width=100,
+    )
+    table.add_column("指标", style="cyan", width=14)
+    table.add_column("短线 (≤1月)", justify="center", width=26)
+    table.add_column("中线 (1-6月)", justify="center", width=26)
+    table.add_column("长线 (6月+)", justify="center", width=26)
+
+    decisions = [mhd.short_term, mhd.mid_term, mhd.long_term]
+    labels = ["短线", "中线", "长线"]
+
+    def _cell(d: FinalDecision | None, fmt_fn) -> str:
+        if d is None:
+            return "[dim]—[/]"
+        return fmt_fn(d)
+
+    def _action_cell(d):
+        c = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}.get(d.action, "white")
+        return f"[bold {c}]{d.action}[/] ({d.confidence:.0%})"
+
+    def _score_cell(d, attr):
+        v = getattr(d, attr, 5.0)
+        c = "green" if v >= 7 else "yellow" if v >= 5 else "red"
+        return f"[{c}]{v:.1f}[/]"
+
+    def _price_cell(d, attr):
+        v = getattr(d, attr, None)
+        return f"{v:.2f}" if v else "-"
+
+    def _pct_cell(d):
+        return f"{d.position_size_pct:.1%}" if d.position_size_pct else "0%"
+
+    def _shares_cell(d):
+        return f"{d.position_size_shares}" if d.position_size_shares else "0"
+
+    # Rows
+    table.add_row("建议",
+                  *[_cell(d, _action_cell) for d in decisions])
+    table.add_row("基本面",
+                  *[_cell(d, lambda d: _score_cell(d, "fundamental_score")) for d in decisions])
+    table.add_row("技术面",
+                  *[_cell(d, lambda d: _score_cell(d, "technical_score")) for d in decisions])
+    table.add_row("情绪面",
+                  *[_cell(d, lambda d: _score_cell(d, "sentiment_score")) for d in decisions])
+    table.add_row("目标价",
+                  *[_cell(d, lambda d: _price_cell(d, "target_price")) for d in decisions])
+    table.add_row("止损价",
+                  *[_cell(d, lambda d: _price_cell(d, "stop_loss")) for d in decisions])
+    table.add_row("建议仓位",
+                  *[_cell(d, _pct_cell) for d in decisions])
+    table.add_row("建议股数",
+                  *[_cell(d, _shares_cell) for d in decisions])
+
+    console.print(table)
+
+    # Consensus summary
+    if mhd.consensus_summary:
+        console.print(Panel(
+            mhd.consensus_summary,
+            title="[bold]三周期共识[/]",
+            border_style="blue",
+        ))
+
+    # Per-horizon summaries (collapsed)
+    for d, label in zip(decisions, labels):
+        if d and d.summary:
+            console.print(Panel(
+                d.summary[:500] + ("..." if len(d.summary) > 500 else ""),
+                title=f"[bold]{label}决策摘要[/]",
+                border_style="dim",
+            ))
+
+    console.print()
+
+
+def print_multi_horizon_watchlist(results: list[MultiHorizonDecision]) -> None:
+    """Print compact watchlist summary for multi-horizon analysis."""
+    table = Table(
+        title="三周期投资分析总览",
+        show_header=True, header_style="bold",
+    )
+    table.add_column("代码", style="cyan", width=8)
+    table.add_column("名称", width=8)
+    table.add_column("现价", justify="right", width=8)
+    table.add_column("短线", justify="center", width=10)
+    table.add_column("中线", justify="center", width=10)
+    table.add_column("长线", justify="center", width=10)
+    table.add_column("共识", justify="center", width=10)
+
+    for mhd in results:
+        def _fmt(d):
+            if d is None:
+                return "[dim]—[/]"
+            c = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}.get(d.action, "white")
+            return f"[{c}]{d.action}[/]"
+
+        c_color = {"BUY": "green", "SELL": "red", "HOLD": "yellow"}.get(
+            mhd.consensus_action, "white"
+        )
+        table.add_row(
+            mhd.symbol,
+            (mhd.name or "")[:8],
+            f"{mhd.current_price:.2f}" if mhd.current_price else "-",
+            _fmt(mhd.short_term),
+            _fmt(mhd.mid_term),
+            _fmt(mhd.long_term),
+            f"[bold {c_color}]{mhd.consensus_action}[/]",
         )
 
     console.print()

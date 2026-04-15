@@ -1,4 +1,10 @@
-"""Market data models."""
+"""Market data models.
+
+Convention: metrics that may be unavailable use Optional[float] = None.
+None means "data not available" — never use 0.0 as a stand-in for missing.
+"""
+
+from __future__ import annotations
 
 from datetime import datetime
 
@@ -13,7 +19,7 @@ class OHLCVBar(BaseModel):
     low: float
     close: float
     volume: int
-    amount: float = 0.0  # turnover in CNY
+    amount: float | None = None  # turnover in CNY
 
 
 class StockSnapshot(BaseModel):
@@ -21,9 +27,9 @@ class StockSnapshot(BaseModel):
     symbol: str
     name: str = ""
     exchange: str = ""  # "SH" or "SZ"
-    current_price: float = 0.0
-    change_pct: float = 0.0
-    market_cap: float = 0.0
+    current_price: float | None = None
+    change_pct: float | None = None
+    market_cap: float | None = None
     pe_ratio: float | None = None
     pb_ratio: float | None = None
     history: list[OHLCVBar] = Field(default_factory=list)
@@ -34,43 +40,43 @@ class FinancialData(BaseModel):
     symbol: str
     revenue: list[float] = Field(default_factory=list)
     net_profit: list[float] = Field(default_factory=list)
-    total_assets: float = 0.0
-    total_liabilities: float = 0.0
-    total_equity: float = 0.0
+    total_assets: float | None = None
+    total_liabilities: float | None = None
+    total_equity: float | None = None
     operating_cash_flow: list[float] = Field(default_factory=list)
-    eps: float = 0.0
-    roe: float = 0.0
-    debt_to_equity: float = 0.0
-    gross_margin: float = 0.0
-    net_margin: float = 0.0
-    revenue_growth: float = 0.0
-    profit_growth: float = 0.0
+    eps: float | None = None
+    roe: float | None = None
+    debt_to_equity: float | None = None
+    gross_margin: float | None = None
+    net_margin: float | None = None
+    revenue_growth: float | None = None
+    profit_growth: float | None = None
     report_dates: list[str] = Field(default_factory=list)
 
 
 class TechnicalIndicators(BaseModel):
     """Computed technical indicators."""
     symbol: str
-    ma_5: float = 0.0
-    ma_10: float = 0.0
-    ma_20: float = 0.0
-    ma_60: float = 0.0
-    ma_120: float = 0.0
-    ema_12: float = 0.0
-    ema_26: float = 0.0
-    macd: float = 0.0
-    macd_signal: float = 0.0
-    macd_hist: float = 0.0
-    rsi_14: float = 0.0
-    bollinger_upper: float = 0.0
-    bollinger_middle: float = 0.0
-    bollinger_lower: float = 0.0
-    kdj_k: float = 0.0
-    kdj_d: float = 0.0
-    kdj_j: float = 0.0
-    atr_14: float = 0.0
-    vwap: float = 0.0
-    volume_ma_20: float = 0.0
+    ma_5: float | None = None
+    ma_10: float | None = None
+    ma_20: float | None = None
+    ma_60: float | None = None
+    ma_120: float | None = None
+    ema_12: float | None = None
+    ema_26: float | None = None
+    macd: float | None = None
+    macd_signal: float | None = None
+    macd_hist: float | None = None
+    rsi_14: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_middle: float | None = None
+    bollinger_lower: float | None = None
+    kdj_k: float | None = None
+    kdj_d: float | None = None
+    kdj_j: float | None = None
+    atr_14: float | None = None
+    vwap: float | None = None
+    volume_ma_20: float | None = None
     trend: str = "neutral"  # "bullish" | "bearish" | "neutral"
     support_levels: list[float] = Field(default_factory=list)
     resistance_levels: list[float] = Field(default_factory=list)

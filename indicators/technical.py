@@ -99,9 +99,11 @@ def compute_all_indicators(df: pd.DataFrame, symbol: str) -> TechnicalIndicators
     # Support/Resistance
     supports, resistances = compute_support_resistance(df)
 
-    # Handle NaN
-    def safe(v: float) -> float:
-        return 0.0 if (v != v) else float(v)  # NaN check
+    # Handle NaN → None (not 0.0 — None means "could not compute")
+    def safe(v: float) -> float | None:
+        if v != v:  # NaN check
+            return None
+        return float(v)
 
     return TechnicalIndicators(
         symbol=symbol,

@@ -131,17 +131,37 @@ def record_trade(
     price: float = 0.0,
     commission: float = 0.0,
     note: str = "",
+    market_value: float = 0.0,
+    cash_remaining: float = 0.0,
 ):
-    """Append a trade row to portfolio.csv."""
+    """Append a trade row to portfolio.csv, including market_value and cash_remaining."""
     csv_path = Path(csv_path)
     exists = csv_path.exists()
+    # Check if file already has the new columns (backward compat with old files)
+    has_new_cols = False
+    if exists:
+        with open(csv_path, encoding="utf-8-sig") as f:
+            header = f.readline()
+            has_new_cols = "market_value" in header
+
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not exists:
-            writer.writerow(["date", "action", "symbol", "name", "shares", "price", "commission", "note"])
+            writer.writerow([
+                "date", "action", "symbol", "name", "shares", "price",
+                "commission", "note", "market_value", "cash_remaining",
+            ])
+        elif not has_new_cols:
+            # old file without new columns — just append without new columns for compat
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d"),
+                action, symbol, name, shares, price, commission, note,
+            ])
+            return
         writer.writerow([
             datetime.now().strftime("%Y-%m-%d"),
             action, symbol, name, shares, price, commission, note,
+            round(market_value, 2), round(cash_remaining, 2),
         ])
 
 
@@ -165,6 +185,8 @@ def get_trade_history(csv_path: str | Path = DEFAULT_CSV) -> list[dict]:
                     "price": float(row.get("price") or 0),
                     "commission": float(row.get("commission") or 0),
                     "note": (row.get("note") or "").strip(),
+                    "market_value": float(row.get("market_value") or 0),
+                    "cash_remaining": float(row.get("cash_remaining") or 0),
                 })
     return trades
 

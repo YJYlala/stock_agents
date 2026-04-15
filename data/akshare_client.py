@@ -1,7 +1,6 @@
 """AKShare data client for A-share market data."""
 
 import logging
-import os
 import akshare as ak
 import pandas as pd
 
@@ -39,6 +38,17 @@ def _patched_session_init(self, *a, **kw):
 
 
 _requests.Session.__init__ = _patched_session_init
+
+
+def _safe_float(value) -> float | None:
+    """Convert a value to float, returning None if missing or not a number."""
+    if value is None:
+        return None
+    try:
+        result = float(value)
+        return result if result == result else None  # NaN check
+    except (ValueError, TypeError):
+        return None
 
 
 class AKShareClient:
@@ -80,7 +90,7 @@ class AKShareClient:
                     col = col.iloc[:, 0]
                 out["amount"] = col
             else:
-                out["amount"] = 0.0
+                out["amount"] = None
             out["date"] = pd.to_datetime(out["date"])
             out = out.sort_values("date").tail(days).reset_index(drop=True)
             return out
@@ -89,38 +99,51 @@ class AKShareClient:
             return pd.DataFrame()
 
     def get_realtime_quote(self, symbol: str) -> dict:
-        """Get real-time quote for a stock using individual stock API (fast)."""
+        """Get real-time quote using bid/ask depth — current_price = best ask (sell_1)."""
         symbol = self._normalize_symbol(symbol)
         try:
-            # Use individual stock info instead of fetching all stocks
-            df = ak.stock_individual_info_em(symbol=symbol)
-            info = {}
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    key = str(row.iloc[0]) if len(row) > 0 else ""
-                    val = row.iloc[1] if len(row) > 1 else ""
-                    info[key] = val
+            bid_ask = ak.stock_bid_ask_em(symbol=symbol)
+            bid_ask_dict = {}
+            if bid_ask is not None and not bid_ask.empty:
+                for _, row in bid_ask.iterrows():
+                    bid_ask_dict[str(row["item"])] = float(row["value"])
 
-            # Get latest price from history (last bar)
+            best_buy = bid_ask_dict.get("buy_1")   # highest bid
+            best_sell = bid_ask_dict.get("sell_1")  # lowest ask (= current market price)
+            # Use sell_1 as the current price — this is the actual price shown on trading platforms
+            current_price = best_sell or best_buy
+
+            # Get previous close for change calculation
             hist = self.get_stock_history(symbol, days=5)
-            current_price = 0.0
-            change_pct = 0.0
-            if not hist.empty:
-                current_price = float(hist["close"].iloc[-1])
-                if len(hist) >= 2:
-                    prev = float(hist["close"].iloc[-2])
-                    change_pct = (current_price - prev) / prev * 100 if prev > 0 else 0
+            change_pct = None
+            if not hist.empty and current_price and current_price > 0:
+                prev_close = float(hist["close"].iloc[-2]) if len(hist) >= 2 else float(hist["close"].iloc[-1])
+                change_pct = round((current_price - prev_close) / prev_close * 100, 2) if prev_close > 0 else None
+
+            # Company info for name, market cap, PE, PB
+            info = {}
+            try:
+                df_info = ak.stock_individual_info_em(symbol=symbol)
+                if df_info is not None and not df_info.empty:
+                    for _, row in df_info.iterrows():
+                        key = str(row.iloc[0]) if len(row) > 0 else ""
+                        val = row.iloc[1] if len(row) > 1 else ""
+                        info[key] = val
+            except Exception:
+                pass
 
             return {
                 "symbol": symbol,
                 "name": str(info.get("股票简称", info.get("名称", ""))),
-                "current_price": current_price,
-                "change_pct": round(change_pct, 2),
-                "volume": 0,
-                "amount": 0,
-                "market_cap": float(info.get("总市值", 0) or 0),
-                "pe_ratio": float(info.get("市盈率(动态)", 0) or 0) or None,
-                "pb_ratio": float(info.get("市净率", 0) or 0) or None,
+                "current_price": round(current_price, 3) if current_price else None,
+                "change_pct": change_pct,
+                "best_bid": best_buy,
+                "best_ask": best_sell,
+                "volume": None,
+                "amount": None,
+                "market_cap": _safe_float(info.get("总市值")),
+                "pe_ratio": _safe_float(info.get("市盈率(动态)")),
+                "pb_ratio": _safe_float(info.get("市净率")),
             }
         except Exception as e:
             logger.error("Failed to get realtime quote for %s: %s", symbol, e)
@@ -166,17 +189,21 @@ class AKShareClient:
         """Get key financial metrics."""
         symbol = self._normalize_symbol(symbol)
         try:
-            df = ak.stock_financial_analysis_indicator(symbol=symbol)
+            # start_year is required — without it akshare may return empty
+            from datetime import date
+            start_yr = str(date.today().year - 2)
+            df = ak.stock_financial_analysis_indicator(symbol=symbol, start_year=start_yr)
             if df is None or df.empty:
                 return {}
-            latest = df.iloc[0]
+            # Data is sorted ascending by date — take the last row for latest
+            latest = df.iloc[-1]
             return {
-                "roe": float(latest.get("净资产收益率(%)", 0) or 0),
-                "gross_margin": float(latest.get("销售毛利率(%)", 0) or 0),
-                "net_margin": float(latest.get("销售净利率(%)", 0) or 0),
-                "debt_to_equity": float(latest.get("资产负债率(%)", 0) or 0),
-                "eps": float(latest.get("摊薄每股收益(元)", 0) or 0),
-                "report_dates": df["日期"].head(8).tolist() if "日期" in df.columns else [],
+                "roe": _safe_float(latest.get("净资产收益率(%)")),
+                "gross_margin": _safe_float(latest.get("销售毛利率(%)")),
+                "net_margin": _safe_float(latest.get("销售净利率(%)")),
+                "debt_to_equity": _safe_float(latest.get("资产负债率(%)")),
+                "eps": _safe_float(latest.get("摊薄每股收益(元)")),
+                "report_dates": df["日期"].tail(8).tolist() if "日期" in df.columns else [],
             }
         except Exception as e:
             logger.error("Failed to get financial metrics for %s: %s", symbol, e)
@@ -193,7 +220,7 @@ class AKShareClient:
             for _, row in df.head(count).iterrows():
                 items.append({
                     "title": str(row.get("新闻标题", "")),
-                    "content": str(row.get("新闻内容", ""))[:500],
+                    "content": str(row.get("新闻内容", ""))[:200],
                     "time": str(row.get("发布时间", "")),
                     "source": str(row.get("文章来源", "")),
                 })
@@ -215,4 +242,28 @@ class AKShareClient:
                 items.append({k: str(v) for k, v in row.items()})
             return items
         except Exception:
+            return []
+
+    def get_announcements(self, symbol: str, days: int = 90) -> list[dict]:
+        """Get recent company announcements (公告) from East Money."""
+        symbol = self._normalize_symbol(symbol)
+        try:
+            from datetime import datetime, timedelta
+            end = datetime.now().strftime("%Y%m%d")
+            begin = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+            df = ak.stock_individual_notice_report(
+                security=symbol, begin_date=begin, end_date=end,
+            )
+            if df is None or df.empty:
+                return []
+            items = []
+            for _, row in df.head(15).iterrows():
+                items.append({
+                    "title": str(row.get("公告标题", "")),
+                    "type": str(row.get("公告类型", "")),
+                    "date": str(row.get("公告日期", "")),
+                })
+            return items
+        except Exception as e:
+            logger.warning("Failed to get announcements for %s: %s", symbol, e)
             return []

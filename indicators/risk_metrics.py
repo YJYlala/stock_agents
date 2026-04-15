@@ -12,8 +12,8 @@ def compute_risk_metrics(
 ) -> dict:
     """Compute risk metrics from a return series."""
     if returns.empty or len(returns) < 10:
-        return {"sharpe_ratio": 0, "sortino_ratio": 0, "max_drawdown": 0,
-                "volatility_annual": 0, "beta": 0, "value_at_risk_95": 0}
+        return {"sharpe_ratio": None, "sortino_ratio": None, "max_drawdown": None,
+                "volatility_annual": None, "beta": None, "value_at_risk_95": None}
 
     returns_clean = returns.dropna()
     daily_rf = risk_free_rate / trading_days
@@ -43,7 +43,7 @@ def compute_risk_metrics(
     var_95 = float(np.percentile(returns_clean, 5))
 
     # Beta (vs benchmark)
-    beta = 0.0
+    beta = None
     if benchmark_returns is not None and len(benchmark_returns) >= 10:
         aligned = pd.DataFrame({"stock": returns_clean, "bench": benchmark_returns}).dropna()
         if len(aligned) > 10:
@@ -57,5 +57,5 @@ def compute_risk_metrics(
         "current_drawdown": round(current_dd, 4),
         "volatility_annual": round(vol_annual, 4),
         "value_at_risk_95": round(var_95, 4),
-        "beta": round(beta, 3),
+        "beta": round(beta, 3) if beta is not None else None,
     }

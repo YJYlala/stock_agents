@@ -1,4 +1,10 @@
-"""Signal and decision models for agent communication."""
+"""Signal and decision models for agent communication.
+
+Convention: None = data unavailable or not computed.
+Scores use None when the agent did not produce a score.
+"""
+
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -12,9 +18,9 @@ class AgentReport(BaseModel):
     agent_role: str
     symbol: str
     timestamp: datetime = Field(default_factory=datetime.now)
-    score: float = 5.0           # 0-10 scale
-    signal: str = "HOLD"         # BUY / SELL / HOLD
-    confidence: float = 0.5      # 0.0 to 1.0
+    score: float | None = None        # 0-10 scale, None = not scored
+    signal: str = "HOLD"              # BUY / SELL / HOLD
+    confidence: float | None = None   # 0.0 to 1.0
     reasoning: str = ""
     key_factors: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -26,10 +32,10 @@ class DebateReport(BaseModel):
     symbol: str
     bull_thesis: str = ""
     bear_thesis: str = ""
-    bull_score: float = 5.0
-    bear_score: float = 5.0
+    bull_score: float | None = None    # None = debate did not produce a score
+    bear_score: float | None = None
     synthesis: str = ""
-    net_conviction: float = 0.0  # -1.0 (bear) to +1.0 (bull)
+    net_conviction: float | None = None  # -1.0 (bear) to +1.0 (bull)
 
 
 class FinalDecision(BaseModel):
@@ -37,18 +43,18 @@ class FinalDecision(BaseModel):
     symbol: str
     name: str = ""
     timestamp: datetime = Field(default_factory=datetime.now)
-    action: str = "HOLD"         # BUY / SELL / HOLD
-    confidence: float = 0.5      # 0.0 to 1.0
-    current_price: float = 0.0
+    action: str = "HOLD"               # BUY / SELL / HOLD
+    confidence: float | None = None    # 0.0 to 1.0
+    current_price: float | None = None
     target_price: float | None = None
     stop_loss: float | None = None
-    position_size_pct: float = 0.0
-    position_size_shares: int = 0
+    position_size_pct: float | None = None
+    position_size_shares: int | None = None
 
-    # Multi-dimension scores
-    fundamental_score: float = 5.0
-    technical_score: float = 5.0
-    sentiment_score: float = 5.0
+    # Multi-dimension scores — None = not provided by LLM
+    fundamental_score: float | None = None
+    technical_score: float | None = None
+    sentiment_score: float | None = None
 
     # Supporting analysis
     summary: str = ""
@@ -64,3 +70,24 @@ class FinalDecision(BaseModel):
     # Portfolio context for report
     portfolio_snapshot: dict[str, Any] = Field(default_factory=dict)
     trade_history: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Horizon info (optional — set when using multi-horizon analysis)
+    horizon: str = ""            # "short", "mid", "long" or "" for default
+    horizon_label: str = ""      # "短线", "中线", "长线"
+    llm_model: str = ""          # e.g. "gpt-54 (Azure OpenAI)"
+
+
+class MultiHorizonDecision(BaseModel):
+    """Combined decision from all three horizon teams."""
+    symbol: str
+    name: str = ""
+    timestamp: datetime = Field(default_factory=datetime.now)
+    current_price: float | None = None
+
+    short_term: FinalDecision | None = None
+    mid_term: FinalDecision | None = None
+    long_term: FinalDecision | None = None
+
+    consensus_action: str = "HOLD"
+    consensus_confidence: float | None = None
+    consensus_summary: str = ""

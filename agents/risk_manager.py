@@ -47,4 +47,8 @@ class RiskManager(BaseAgent):
                 "max_sector_pct": self.data.settings.risk.max_sector_pct,
                 "max_drawdown_pct": self.data.settings.risk.max_drawdown_pct,
             },
+            # Pre-computed risk signal (Taleb + Markowitz framework)
+            "risk_signal": context.get("quant_signals", {}).get("risk_signal", {}) if context else {},
+            "quant_signal": context.get("quant_signals", {}).get("quant_signal", {}) if context else {},
+            "market_context": context.get("market_context", {}) if context else {},
         }

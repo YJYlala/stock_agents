@@ -42,7 +42,7 @@ class OpenRouterConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "github_models", "ollama", "openrouter"] = "github_models"
+    provider: Literal["anthropic", "github_models", "azure_openai", "ollama", "openrouter"] = "github_models"
     model: str = "gpt-4o"
     model_final: str = "gpt-4o"
     max_tokens: int = 4096
@@ -50,6 +50,13 @@ class LLMConfig(BaseModel):
     api_key_env: str = "GITHUB_TOKEN"
     endpoint: str = "https://models.inference.ai.azure.com"
     fallback: Literal["ollama", "none"] = "ollama"
+    # Azure OpenAI specific
+    azure_api_version: str = "2025-01-01-preview"
+    azure_deployment: str = ""  # deployment name (overrides model for Azure)
+    # Per-agent model overrides — key is agent type, value is model name
+    # Agents not listed here use the default `model` above.
+    # Example: {"risk": "o4-mini", "quant": "o4-mini", "fund_manager": "gpt-54"}
+    agent_models: dict[str, str] = Field(default_factory=dict)
 
     @property
     def api_key(self) -> str:
@@ -57,30 +64,6 @@ class LLMConfig(BaseModel):
         if not key:
             raise ValueError(f"Environment variable {self.api_key_env} is not set")
         return key
-
-
-class FutuConfig(BaseModel):
-    host: str = "127.0.0.1"
-    port: int = 11111
-    market: str = "SH"
-
-
-class THSConfig(BaseModel):
-    """同花顺 configuration — supports file-based and live (easytrader) modes."""
-
-    positions_file: str | None = None
-    cash_file: str | None = None
-    watchlist_file: str | None = None
-    sync_watchlist: bool = True
-    # Live (easytrader) settings
-    live: bool = True            # prefer live connection over files
-    exe_path: str | None = None  # path to 同花顺下单客户端 exe (auto-detect if None)
-
-
-class AccountConfig(BaseModel):
-    """Account provider routing."""
-
-    provider: Literal["futu", "ths", "none"] = "ths"
 
 
 class AnalysisConfig(BaseModel):
@@ -112,19 +95,54 @@ class OutputConfig(BaseModel):
     output_directory: str = "reports"
 
 
+class EmailNotificationConfig(BaseModel):
+    enabled: bool = False
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    from_addr_env: str = "EMAIL_FROM"
+    password_env: str = "EMAIL_PASSWORD"
+    to_addr: str | list[str] = ""
+
+
+class TelegramNotificationConfig(BaseModel):
+    enabled: bool = False
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN"
+    chat_id_env: str = "TELEGRAM_CHAT_ID"
+
+
+class WeChatNotificationConfig(BaseModel):
+    enabled: bool = False
+    webhook_url_env: str = "WECHAT_WEBHOOK_URL"
+
+
+class PushPlusNotificationConfig(BaseModel):
+    enabled: bool = False
+    token_env: str = "PUSHPLUS_TOKEN"
+
+
+class NotificationConfig(BaseModel):
+    email: EmailNotificationConfig = Field(default_factory=EmailNotificationConfig)
+    telegram: TelegramNotificationConfig = Field(default_factory=TelegramNotificationConfig)
+    wechat: WeChatNotificationConfig = Field(default_factory=WeChatNotificationConfig)
+    pushplus: PushPlusNotificationConfig = Field(default_factory=PushPlusNotificationConfig)
+
+
+class ScheduleConfig(BaseModel):
+    skip_holidays: bool = True
+    notification: NotificationConfig = Field(default_factory=NotificationConfig)
+
+
 class Settings(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
-    account: AccountConfig = Field(default_factory=AccountConfig)
-    futu: FutuConfig = Field(default_factory=FutuConfig)
-    ths: THSConfig = Field(default_factory=THSConfig)
     watchlist: list[str] = Field(default_factory=lambda: ["600519"])
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     compliance: ComplianceConfig = Field(default_factory=ComplianceConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
 
     @property
     def base_dir(self) -> Path:

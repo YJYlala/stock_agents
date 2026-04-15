@@ -1,318 +1,844 @@
-# Stock Agents - Multi-Agent Stock Analysis System
+# Stock Agents — 多周期 AI 股票分析系统
 
-A multi-agent AI system for China A-share stock analysis, powered by LLM-based analyst agents that collaborate through a structured 5-phase pipeline to produce comprehensive investment analysis reports.
+A multi-agent AI system for China A-share stock analysis. Eight specialist AI agents — each embodying the decision philosophy of a real financial legend — collaborate through a structured 5-phase pipeline to produce buy/sell/hold recommendations across three investment horizons: short-term (≤1 month), mid-term (1–6 months), and long-term (6 months+).
 
-## Architecture Overview
+**Core principle: Code computes, AI decides.** All quantitative math (Kelly criterion, Graham valuation, technical signals, risk assessment) is pre-computed by a deterministic quant engine. LLM agents only interpret and synthesize — they never do arithmetic.
+
+---
+
+## Table of Contents
+
+1. [Quick Start](#quick-start)
+2. [Architecture](#architecture)
+3. [Three-Horizon System](#three-horizon-system)
+4. [Agent Philosophies](#agent-philosophies)
+5. [5-Phase Pipeline](#5-phase-pipeline)
+6. [Market Context & International News](#market-context--international-news)
+7. [AI News Curation](#ai-news-curation)
+8. [Quant Engine](#quant-engine)
+9. [LLM Backends](#llm-backends)
+10. [CLI Reference](#cli-reference)
+11. [Scheduled Reports (GitHub Actions)](#scheduled-reports-github-actions)
+12. [Portfolio Tracking](#portfolio-tracking)
+13. [Configuration](#configuration)
+14. [Project Structure](#project-structure)
+
+---
+
+## Quick Start
+
+### Requirements
+
+- Python 3.11+
+- One of: Azure OpenAI endpoint, GitHub Copilot Pro account, Anthropic API key, or local [Ollama](https://ollama.com)
+
+### Install
+
+```bash
+cd stock_agents
+pip install -e .
+```
+
+### Configure
+
+Create a `.env` file in `stock_agents/`:
+
+```env
+# Azure OpenAI (HP Corporate / enterprise)
+AZURE_OPENAI_API_KEY=your_key
+HP_UID_CLIENT_ID=your_uid_client_id
+HP_UID_CLIENT_SECRET=your_uid_client_secret
+
+# OR: GitHub Models / Copilot Pro
+COPILOT_GITHUB_TOKEN=your_fine_grained_pat
+
+# OR: Anthropic Claude
+ANTHROPIC_API_KEY=your_key
+
+# OR: Ollama runs locally, no key needed
+```
+
+Edit `config.yaml` to select your LLM provider and set your watchlist:
+
+```yaml
+llm:
+  provider: "azure_openai"   # azure_openai | github_models | anthropic | ollama | openrouter
+  model: "gpt-54"
+  fallback: "ollama"
+
+watchlist:
+  - "600711"   # 盛屯矿业
+  - "601012"   # 隆基绿能
+  - "603993"   # 洛阳钼业
+```
+
+Record your initial cash in `portfolio.csv`:
+
+```csv
+date,action,symbol,name,shares,price,commission,note
+2026-04-08,init_cash,,,,,55351.10,初始资金
+```
+
+### Run
+
+```bash
+# Analyze one stock (balanced single-team analysis)
+python -m stock_agents analyze 600711
+
+# Run all three horizon teams simultaneously (full 三周期 analysis)
+python -m stock_agents analyze 600711 --horizon all
+
+# Single horizon
+python -m stock_agents analyze 600711 --horizon short
+python -m stock_agents analyze 600711 --horizon mid
+python -m stock_agents analyze 600711 --horizon long
+
+# Analyze entire watchlist
+python -m stock_agents watchlist
+python -m stock_agents watchlist --horizon all
+
+# Portfolio snapshot, trade recording, pre-market plan
+python -m stock_agents portfolio
+python -m stock_agents trade buy 600711 700 14.15
+python -m stock_agents copilot-plan
+```
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     CLI / MCP Server                     │
-│                  (cli.py / mcp_server.py)                │
-└─────────────┬───────────────────────────────┬───────────┘
-              │                               │
-              ▼                               ▼
-┌──────────────────────┐    ┌──────────────────────────────┐
-│    Orchestrator       │    │      Config & Settings        │
-│  (orchestrator.py)    │◄───│  (config.yaml + settings.py)  │
-│  5-Phase Pipeline     │    │  prompts.py (8 agent prompts) │
-└──────────┬───────────┘    └──────────────────────────────┘
-           │
-           │  Phase 1: Data Pre-fetch
-           ▼
-┌──────────────────────────────────────────┐
-│            Data Layer                     │
-│  ┌─────────────┐  ┌──────────────────┐  │
-│  │ AKShare      │  │ CSV Portfolio    │  │
-│  │ (market data)│  │ (holdings/trades)│  │
-│  └─────────────┘  └──────────────────┘  │
-│  ┌─────────────┐  ┌──────────────────┐  │
-│  │ File Cache   │  │ THS / Futu       │  │
-│  │ (JSON, TTL)  │  │ (broker clients) │  │
-│  └─────────────┘  └──────────────────┘  │
-└──────────────────────────────────────────┘
-           │
-           │  Phase 2-5: Agent Analysis
-           ▼
-┌──────────────────────────────────────────┐
-│           LLM Backends (llm/)            │
-│  ┌────────────┐  ┌───────────────────┐  │
-│  │ GitHub      │  │ Claude (Anthropic)│  │
-│  │ Models API  │  │                   │  │
-│  └────────────┘  └───────────────────┘  │
-│  ┌────────────┐  ┌───────────────────┐  │
-│  │ Ollama     │  │ Fallback Client   │  │
-│  │ (local)    │  │ (auto-switch)     │  │
-│  └────────────┘  └───────────────────┘  │
-└──────────────────────────────────────────┘
-           │
-           ▼
-┌──────────────────────────────────────────┐
-│          8 Analyst Agents                │
-│                                          │
-│  Phase 2: Independent Analysis           │
-│  ┌──────────┐ ┌──────────┐ ┌─────────┐ │
-│  │Fundamental│ │Technical │ │Sentiment│ │
-│  │ Analyst   │ │ Analyst  │ │ Analyst │ │
-│  │ (40%)     │ │ (30%)    │ │ (30%)   │ │
-│  └──────────┘ └──────────┘ └─────────┘ │
-│                                          │
-│  Phase 3: Bull/Bear Debate               │
-│  ┌──────────────┐  ┌──────────────┐     │
-│  │Bull Researcher│  │Bear Researcher│    │
-│  │ (多头研究员)   │  │ (空头研究员)  │    │
-│  └──────────────┘  └──────────────┘     │
-│                                          │
-│  Phase 4: Risk & Sizing                  │
-│  ┌──────────────┐  ┌──────────────┐     │
-│  │ Quant Trader │  │ Risk Manager │     │
-│  │ (量化交易员)  │  │ (风险管理官)  │    │
-│  └──────────────┘  └──────────────┘     │
-│                                          │
-│  Phase 5: Final Decision                 │
-│  ┌─────────────────────────────────┐    │
-│  │      Fund Manager (基金经理)     │    │
-│  │  Weighted scoring + veto logic   │    │
-│  └─────────────────────────────────┘    │
-└──────────────────────────────────────────┘
-           │
-           ▼
-┌──────────────────────────────────────────┐
-│            Output Layer                   │
-│  ┌─────────────┐  ┌──────────────────┐  │
-│  │ Markdown     │  │ Rich Console     │  │
-│  │ Report (.md) │  │ Formatter        │  │
-│  └─────────────┘  └──────────────────┘  │
-│  ┌─────────────┐  ┌──────────────────┐  │
-│  │ Compliance   │  │ Copilot Plan     │  │
-│  │ Logger       │  │ (pre-trading)    │  │
-│  └─────────────┘  └──────────────────┘  │
-└──────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CLI  /  MCP Server                           │
+│              python -m stock_agents  |  mcp_server.py               │
+└──────────────────────┬──────────────────────────────────────────────┘
+                       │
+          ┌────────────┴─────────────┐
+          │                          │
+          ▼                          ▼
+  ┌───────────────┐        ┌──────────────────────┐
+  │  Orchestrator │        │ MultiHorizonOrch.     │
+  │ (single team) │        │ (3 horizon teams)     │
+  └───────┬───────┘        └──────────┬───────────┘
+          │                           │
+          └──────────┬────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │         Data Enrichment Layer             │
+     │  MarketContext (国内+国际市场数据)          │
+     │    ├─ A-share indices (上证/深证/创业板)   │
+     │    ├─ US indices (Dow/Nasdaq/S&P500)      │
+     │    ├─ USD/CNY forex rate                  │
+     │    ├─ Global news (华尔街见闻/财联社)       │
+     │    ├─ Industry/concept board rankings     │
+     │    ├─ Sector fund flows                   │
+     │    └─ CCTV policy news                    │
+     │  AI NewsCurator (LLM-filtered news)       │
+     │    ├─ init_summary (macro→micro digest)   │
+     │    └─ useful_news (AI-filtered headlines) │
+     │  Null Annotation (_note fields)           │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │              Data Layer                   │
+     │  AKShare (市场数据)  ·  CSV Portfolio      │
+     │  File Cache (JSON, TTL=15min)             │
+     │  THS / Futu (broker account readers)     │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │           Quant Engine                    │
+     │  (pre-computed before any LLM call)       │
+     │  Kelly criterion  ·  Graham valuation     │
+     │  Technical signals  ·  Risk assessment    │
+     │  Composite score  ·  Position sizing      │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │          8 Analyst Agents                 │
+     │                                           │
+     │  Phase 2  —  Independent Analysis         │
+     │    FundamentalAnalyst  (Graham+Simons)    │
+     │    TechnicalAnalyst    (Simons)           │
+     │    SentimentAnalyst    (Dalio)            │
+     │                                           │
+     │  Phase 3  —  Bull/Bear Debate             │
+     │    BullResearcher      (Kraus)            │
+     │    BearResearcher      (Taleb)            │
+     │                                           │
+     │  Phase 4  —  Risk & Sizing                │
+     │    QuantTrader         (Simons)           │
+     │    RiskManager         (Taleb+Markowitz)  │
+     │                                           │
+     │  Phase 5  —  Final Decision               │
+     │    FundManager         (Wooldridge MAS)   │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │           LLM Backends                    │
+     │  GitHub Copilot Pro (full model catalog) │
+     │  Azure OpenAI (GPT-5.4)                  │
+     │  Anthropic Claude                        │
+     │  Ollama  (local fallback)                │
+     │  FallbackClient  (auto rate-limit retry) │
+     └───────────────┬──────────────────────────┘
+                     │
+     ┌───────────────▼──────────────────────────┐
+     │             Output                        │
+     │  Rich console  ·  Markdown reports        │
+     │  Date-organized: reports/YYYY-MM-DD/      │
+     │  Email (multi-recipient, raw data incl.)  │
+     │  Compliance JSONL log  ·  Copilot plan    │
+     └──────────────────────────────────────────┘
 ```
+
+---
+
+## Three-Horizon System
+
+When you pass `--horizon all`, three independent teams analyze the same stock simultaneously, each with different priorities, weights, and risk tolerances.
+
+```
+┌─────────────────┬──────────────────┬──────────────────┬──────────────────┐
+│ 参数            │  短线 (≤1月)     │  中线 (1-6月)    │  长线 (6月+)     │
+├─────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ 技术面权重       │ 45%  (主导)      │ 25%              │ 15%              │
+│ 基本面权重       │ 10%              │ 35%              │ 50%  (主导)      │
+│ 成长性权重       │ 10%              │ 15%              │ 25%              │
+│ 风险权重         │ 35%              │ 25%              │ 10%              │
+├─────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ 买入阈值         │ ≥ 6.5           │ ≥ 7.0            │ ≥ 7.5            │
+│ 卖出阈值         │ ≤ 3.5           │ ≤ 3.5            │ ≤ 3.0            │
+│ 止损 (ATR倍数)   │ 1.5×            │ 2.0×             │ 3.0×             │
+│ Kelly上限        │ 20%             │ 25%              │ 15%              │
+│ 最大单仓         │ 8%              │ 10%              │ 15%              │
+│ 最大回撤限制     │ 8%              │ 12%              │ 20%              │
+└─────────────────┴──────────────────┴──────────────────┴──────────────────┘
+```
+
+**Consensus rule**: 2 of 3 horizons agree → that action. Otherwise → HOLD.
+
+**Output**: three-column comparison table plus consensus summary:
+
+```
+                    短线 vs 中线 vs 长线
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ 指标       ┃   短线 (≤1月) ┃  中线 (1-6月) ┃   长线 (6月+) ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ 建议       │   HOLD (83%)  │   HOLD (84%)  │   HOLD (86%)  │
+│ 基本面     │      5.4      │      5.4      │      5.0      │
+│ 技术面     │      4.8      │      4.8      │      4.2      │
+│ 情绪面     │      6.8      │      6.8      │      7.1      │
+│ 目标价     │     14.60     │     15.09     │     14.60     │
+│ 止损价     │     13.09     │     12.73     │     12.02     │
+│ 建议仓位   │     13.9%     │     10.2%     │      8.0%     │
+└────────────┴───────────────┴───────────────┴───────────────┘
+
+三周期一致：HOLD。短线 83%，中线 84%，长线 86%。综合建议：HOLD。
+```
+
+Data is fetched once and shared across all three teams. Horizons run sequentially (API rate limit safety); agents within each horizon run through a serialized semaphore with 2s delay between calls.
+
+---
+
+## Agent Philosophies
+
+Each agent's system prompt is grounded in the actual decision framework of a real financial legend. The LLM interprets pre-computed quant data through that lens — it does no arithmetic itself.
+
+| Agent | Financial Mind | Core Philosophy Applied |
+|-------|---------------|------------------------|
+| **FundamentalAnalyst** | Ben Graham + Jim Simons | Margin of safety, Graham formula V=EPS×(8.5+2g), statistical edge over narrative |
+| **TechnicalAnalyst** | Jim Simons (Renaissance) | Pattern recognition as signal extraction, momentum + mean reversion, zero narrative bias |
+| **SentimentAnalyst** | Ray Dalio | Macro narrative analysis, news as leading indicator, "what would change the machine's view" |
+| **BullResearcher** | Cliff Asness (AQR) | Factor investing, value + momentum game theory, build strongest BUY case |
+| **BearResearcher** | Nassim Nicholas Taleb | Antifragility, fat tail identification, "what is the maximum credible loss path" |
+| **QuantTrader** | Jim Simons | Kelly criterion sizing, factor scores, mathematical position recommendation |
+| **RiskManager** | Taleb + Harry Markowitz | Portfolio-level risk, drawdown control, correlation — has **veto power** |
+| **FundManager** | Michael Wooldridge (MAS) | Multi-agent coordination, structured voting, conflict resolution, final synthesizer |
+
+Each horizon team gets a Chinese-language preamble prepended to the base prompt, shifting focus toward the horizon's investment timeframe (e.g., short-term emphasizes technical pattern and momentum; long-term emphasizes earnings quality and business moat).
+
+---
 
 ## 5-Phase Pipeline
 
-### Phase 1: Data Pre-fetch
-Collects all market data upfront via AKShare:
-- **Price history** (250 days OHLCV)
-- **Financial statements** (income, balance sheet, cash flow)
-- **Technical indicators** (RSI, MACD, KDJ, Bollinger, etc.)
-- **News & insider trades**
-- **Portfolio state** (current cash, holdings, trade history from CSV)
+Each analysis (per stock, per horizon) runs through seven phases (0, 0.5, 1–5).
 
-### Phase 2: Independent Analysis (3 agents)
-Three core analysts work independently, each receiving full portfolio context:
+### Phase 0 — Market Context (before any stock analysis)
 
-| Agent | Role | Weight | Focus |
-|-------|------|--------|-------|
-| **Fundamental Analyst** | 基本面分析师 | 40% | Revenue, margins, ROE, DCF valuation, PE/PB ratios |
-| **Technical Analyst** | 技术面分析师 | 30% | MA crossovers, RSI, MACD, Bollinger, support/resistance |
-| **Sentiment Analyst** | 情绪面分析师 | 30% | News sentiment, insider trades, capital flows |
+Fetched **once per run** and cached for all stocks:
+- **A-share indices**: Shanghai Composite, Shenzhen Component, ChiNext (5-day trend)
+- **US indices**: Dow Jones, Nasdaq, S&P 500 (via Sina Finance)
+- **Forex**: USD/CNY spot rate
+- **International news**: 15 headlines from 华尔街见闻 + 财联社 (filtered for global macro relevance)
+- **Sector boards**: Top/bottom industry performers, hot concept themes
+- **Fund flows**: Sector-level institutional money flow rankings
+- **Policy news**: CCTV News headline items
 
-Each outputs: `signal (BUY/SELL/HOLD)`, `score (0-10)`, `confidence (0-1)`, reasoning, key factors, risks.
+### Phase 0.5 — Data Enrichment (per stock)
 
-### Phase 3: Bull/Bear Debate
-Two research agents build opposing investment theses:
+After quant engine runs:
+1. **Null annotation**: Every `null` field in quant signals gets a `_note` sibling explaining *why* it's null (e.g., `"eps_note": "EPS is negative — Graham formula requires positive earnings"`)
+2. **AI news curation**: LLM filters raw news into structured digest:
+   - `init_summary`: 200-char macro→micro news environment digest
+   - `useful_news`: AI-filtered top-8 actionable headlines
+   - `company_events`, `risk_flags`, `sentiment_summary`
 
-- **Bull Researcher** (多头研究员): Builds the strongest case FOR buying
-- **Bear Researcher** (空头研究员): Builds the strongest case AGAINST buying
+### Phase 1 — Data Pre-fetch & Quant Engine
 
-They receive all Phase 2 reports and generate scored theses. Net conviction = (bull_score - bear_score) / 10.
+The deterministic quant engine pre-computes everything numeric:
 
-### Phase 4: Risk & Sizing
-Quantitative risk assessment and position management:
+```
+raw market data
+    ├── Technical signals: RSI zone, MACD crossover, KDJ state, Bollinger squeeze, ATR
+    ├── Fundamental signals: Graham intrinsic value, PE/PB z-score, ROE quality, Piotroski F-Score
+    ├── Kelly criterion: f* = (bp - q) / b, capped per horizon, half-Kelly applied
+    ├── Risk assessment: max drawdown vs limit, VaR, Sharpe/Sortino, concentration check
+    └── Composite score (0-10): weighted sum of all factors per horizon
+```
 
-- **Quant Trader** (量化交易员): Risk metrics (Sharpe, Sortino, VaR), recommended position size
-- **Risk Manager** (风险管理官): **Veto power** — enforces position limits and drawdown limits
+All four result sections are injected into every agent's context as structured JSON (not prose).
 
-Risk limits (configurable):
-- Max single position: 25% of portfolio
-- Max sector concentration: 40%
-- Max drawdown: 15%
+AKShare fetches and caches (15 min TTL):
+- 250-day OHLCV price history
+- 8 quarters of financial statements (income, balance sheet, cash flow)
+- Calculated technical indicators (RSI, MACD, KDJ, Bollinger, SMA/EMA, ATR)
+- 20 recent news items and insider trades
+- Portfolio state from `portfolio.csv` (cash, positions, avg cost, trade history)
 
-### Phase 5: Final Decision
-The **Fund Manager** (基金经理) synthesizes everything with a 7-step methodology:
+### Phase 2 — Independent Analysis (3 agents)
 
-1. **Score Extraction**: Read each analyst's score
-2. **Weighted Calculation**: `fundamental×0.40 + technical×0.30 + sentiment×0.30`
-3. **Vote Tally**: Count BUY/SELL/HOLD among 3 core analysts
-4. **Bull/Bear Assessment**: Net conviction from debate
-5. **Risk Check**: Honor Risk Manager's veto
-6. **Decision Rules**: `weighted≥7.5 + 2 BUY votes → BUY`, `weighted≤3.5 + 2 SELL → SELL`, else `HOLD`
-7. **Position Sizing**: Recommended shares (A-share 100-lot rounding)
+Three core analysts work independently, each receiving full market data + pre-computed quant signals:
+
+| Agent | Default Weight | Focus |
+|-------|---------------|-------|
+| FundamentalAnalyst | 40% | Valuation vs intrinsic value, earnings quality, growth runway |
+| TechnicalAnalyst | 30% | Chart structure, momentum, support/resistance levels |
+| SentimentAnalyst | 30% | News sentiment, capital flow, macro positioning |
+
+Each outputs: `signal` (BUY/SELL/HOLD), `score` (0–10), `confidence` (0–1), `reasoning`, `key_factors`, `risks`.
+
+### Phase 3 — Bull/Bear Debate
+
+BullResearcher builds the strongest case FOR buying; BearResearcher the strongest case AGAINST. Both receive Phase 2 reports. Net conviction = `(bull_score − bear_score) / 10`.
+
+### Phase 4 — Risk & Sizing (sequential)
+
+1. **QuantTrader**: Kelly fraction → concrete share count (100-lot rounded for A-shares)
+2. **RiskManager**: checks portfolio drawdown, concentration, sector limits. **Veto power** — `risk_approved=False` forces HOLD regardless of other signals.
+
+### Phase 5 — Final Decision (FundManager)
+
+Seven-step synthesis:
+
+```
+1. Extract each analyst's score and signal
+2. Weighted score = fundamental×w₁ + technical×w₂ + sentiment×w₃
+3. Vote tally: count BUY / SELL / HOLD among 3 core analysts
+4. Bull/Bear net conviction assessment
+5. Risk veto check (risk_approved=False → HOLD regardless)
+6. Decision rules:
+     composite ≥ buy_threshold  AND  2+ BUY votes  →  BUY
+     composite ≤ sell_threshold  AND  2+ SELL votes  →  SELL
+     otherwise                                        →  HOLD
+7. Position sizing: Kelly shares, rounded to 100-lot multiples
+```
+
+---
+
+## Market Context & International News
+
+The system fetches macro-level context **once per run** (cached for all stocks in the batch). This gives every agent a global→local reasoning chain.
+
+**Data sources:**
+
+| Source | Data | API |
+|--------|------|-----|
+| Sina Finance | US indices (Dow, Nasdaq, S&P 500) | `index_us_stock_sina` |
+| AKShare | A-share indices (5-day trend) | `stock_zh_index_daily` |
+| AKShare | USD/CNY exchange rate | `fx_spot_quote` |
+| 华尔街见闻 | International financial headlines | WallStreetCN API |
+| 财联社 | Chinese financial flash news | CLS Telegraph API |
+| 东方财富 | Industry/concept board rankings | `stock_board_industry_name_em` |
+| 东方财富 | Sector fund flow rankings | `stock_sector_fund_flow_rank` |
+| 央视新闻 | Policy/macro news | `news_cctv` |
+| AKShare | Per-stock industry performance | `stock_individual_info_em` |
+
+**Prediction philosophy:** All agents are instructed to use historical pattern matching, business cycle positioning, and scenario analysis (bull/base/bear) to make **forward-looking predictions** — not just describe current data.
+
+---
+
+## AI News Curation
+
+Raw news goes through a two-stage AI curation pipeline before reaching agents:
+
+**Stage 1 — NewsCurator** (cheap LLM call, gpt-5.4-mini):
+- Filters raw company news + market context through AI
+- Outputs: `init_summary` (200-char macro→micro digest), `useful_news` (top-8 actionable headlines), `company_events`, `risk_flags`, `sentiment_summary`
+
+**Stage 2 — SentimentAnalyst** receives:
+- The `init_summary` as pre-digested context
+- The `useful_news` (AI-filtered) instead of raw `news[:8]`
+- Full `curated_news` digest for deeper reasoning
+
+This two-stage flow ensures the sentiment agent works with **signal, not noise**.
+
+---
+
+## Quant Engine
+
+`indicators/quant_engine.py` is the math backbone. Call it directly:
+
+```python
+from stock_agents.indicators.quant_engine import run_quant_pipeline
+
+signals = run_quant_pipeline(
+    indicators=ind_dict,        # RSI, MACD, KDJ, ATR, etc.
+    financials=fin_dict,        # PE, PB, ROE, EPS, margins, growth rates
+    risk_metrics=risk_dict,     # max_drawdown, sharpe, portfolio positions
+    current_price=14.17,
+    market_cap=8.5e9,
+    portfolio_value=100000,
+    portfolio_positions=[...],
+    atr=0.35,
+    # Horizon-specific overrides:
+    horizon_weights={"fundamental": 0.10, "technical": 0.45, "growth": 0.10, "risk": 0.35},
+    kelly_cap=0.20,
+    buy_threshold=6.5,
+    sell_threshold=3.5,
+    stop_loss_atr_mult=1.5,
+    hold_period_days=20,
+)
+
+# Returns four sub-dicts:
+signals["technical_signal"]    # RSI zone, MACD crossover, KDJ state, trend direction
+signals["fundamental_signal"]  # Graham value vs price, F-Score, margin quality
+signals["quant_signal"]        # Kelly fraction, composite score, recommended shares
+signals["risk_signal"]         # Drawdown vs limit, VaR, risk_approved bool
+```
+
+---
+
+## LLM Backends
+
+Configure `llm.provider` in `config.yaml`:
+
+| Provider | `provider` value | Notes |
+|----------|-----------------|-------|
+| **Azure OpenAI** | `azure_openai` | HP corporate endpoint, GPT-5.4, HP UID OAuth bearer auth |
+| **GitHub Models** | `github_models` | Free with Copilot Pro. Auto-detects token type for full catalog access |
+| **Anthropic** | `anthropic` | Claude 3.5/3.7. Needs `ANTHROPIC_API_KEY` |
+| **Ollama** | `ollama` | Local, free, no network. `gemma4` recommended |
+| **OpenRouter** | `openrouter` | Access to many models. Needs `OPENROUTER_API_KEY` |
+
+### Fallback behavior
+
+`FallbackLLMClient` wraps any primary + secondary pair:
+
+- **Rate limits (429)**: triggers 60s backoff and retry on primary — does **not** count toward permanent switch
+- **Real errors** (auth, config, model not found): counted; 3 consecutive → permanently switch to fallback for the session
+- Resets to primary on successful call
+
+### Azure OpenAI (HP Corporate)
+
+```env
+HP_UID_CLIENT_ID=your_client_id
+HP_UID_CLIENT_SECRET=your_client_secret
+AZURE_OPENAI_API_KEY=your_key   # fallback if UID auth unavailable
+```
+
+The client auto-fetches an HP UID OAuth bearer token (30 min expiry, auto-refreshed) and loads the HP corporate CA certificate bundle from `ca-certifacates.crt`.
+
+### GitHub Models / Copilot Pro
+
+**Recommended: Use the built-in OAuth login** (same flow as GitHub Copilot CLI, Hermes Agent, opencode):
+
+```bash
+# Authenticate with GitHub Copilot (opens browser)
+python -m stock_agents copilot-login
+
+# See all models available under your Copilot Pro subscription
+python -m stock_agents copilot-models
+```
+
+This grants access to the **full Copilot Pro model catalog** (GPT-5.4, Claude Opus 4.6, Gemini 2.5 Pro, etc.) via `api.githubcopilot.com`.
+
+**Token resolution order** (first match wins):
+
+| Priority | Source | How to set |
+|----------|--------|-----------|
+| 1 | `COPILOT_GITHUB_TOKEN` env var | `export COPILOT_GITHUB_TOKEN=gho_...` |
+| 2 | `GH_TOKEN` env var | `export GH_TOKEN=github_pat_...` |
+| 3 | `GITHUB_TOKEN` env var | `export GITHUB_TOKEN=github_pat_...` |
+| 4 | Cached OAuth token | Auto-saved by `copilot-login` in `~/.stock-agents/copilot_token.json` |
+| 5 | `gh auth token` (GitHub CLI) | `gh auth login` |
+
+**Token types:**
+
+| Token prefix | API access | Notes |
+|-------------|-----------|-------|
+| `gho_*` (OAuth from copilot-login) | ✅ Full Copilot catalog | **Recommended** — all Copilot Pro models |
+| `github_pat_*` (fine-grained PAT) | ✅ Full Copilot catalog | Needs "Copilot Requests" permission |
+| `ghp_*` (classic PAT) | ⚠️ GitHub Models only | Limited to GPT-4o; auto-downgraded |
+| `gho_*` (from `gh auth login`) | ⚠️ Depends on scopes | May need `copilot-login` for full access |
+
+Classic PATs (`ghp_*`) are automatically downgraded to the free GitHub Models endpoint (GPT-4o only).
+
+---
+
+## CLI Reference
+
+```
+python -m stock_agents <command> [options]
+```
+
+### `analyze <symbol>`
+
+Full 5-phase analysis for one stock.
+
+```bash
+python -m stock_agents analyze 600711
+python -m stock_agents analyze 600711 --horizon short   # short-term team only
+python -m stock_agents analyze 600711 --horizon mid     # mid-term team only
+python -m stock_agents analyze 600711 --horizon long    # long-term team only
+python -m stock_agents analyze 600711 --horizon all     # all three teams + consensus
+```
+
+### `watchlist`
+
+Analyze all stocks in `config.yaml watchlist`.
+
+```bash
+python -m stock_agents watchlist
+python -m stock_agents watchlist --horizon all
+```
+
+### `portfolio`
+
+Show current portfolio snapshot: positions, P&L, cash, total value.
+
+```bash
+python -m stock_agents portfolio
+```
+
+### `trade`
+
+Record trades or set cash. Persisted to `portfolio.csv`.
+
+```bash
+python -m stock_agents trade buy  600711 700 14.15 --commission 5.00
+python -m stock_agents trade sell 600711 300 15.50 --commission 3.00
+python -m stock_agents trade cash 55000       # set cash balance
+python -m stock_agents trade history          # print trade log
+```
+
+### `copilot-plan`
+
+Generate a pre-market action plan for all watchlist stocks.
+
+```bash
+python -m stock_agents copilot-plan
+python -m stock_agents copilot-plan --save-plan
+```
+
+### `config`
+
+Print current resolved configuration.
+
+```bash
+python -m stock_agents config
+```
+
+### `report-and-notify`
+
+Run full watchlist analysis, save reports, and send notifications. This is the command used by GitHub Actions and cron jobs.
+
+```bash
+python -m stock_agents report-and-notify           # skips non-trading days
+python -m stock_agents report-and-notify --force    # run regardless of trading calendar
+```
+
+### `debug`
+
+Step-by-step pipeline debugger for inspecting data, prompts, and agent output.
+
+```bash
+python -m stock_agents debug 600711                              # all non-LLM phases
+python -m stock_agents debug 600711 --phase data                # data fetch only
+python -m stock_agents debug 600711 --phase prompt              # show agent prompts
+python -m stock_agents debug 600711 --phase agent --agent fundamental   # run one agent with real LLM
+```
+
+### `copilot-login`
+
+Authenticate with GitHub Copilot via OAuth device code flow (opens browser).
+
+```bash
+python -m stock_agents copilot-login
+```
+
+### `copilot-models`
+
+List all models available under your Copilot Pro subscription.
+
+```bash
+python -m stock_agents copilot-models
+```
+
+### Global flags
+
+```bash
+python -m stock_agents -v analyze 600711       # verbose logging
+python -m stock_agents --config my.yaml ...   # custom config file
+```
+
+---
+
+## Scheduled Reports (GitHub Actions)
+
+Automated premarket analysis runs every trading day at 08:00 Beijing time via GitHub Actions.
+
+### How it works
+
+```
+GitHub Actions cron (00:00 UTC = 08:00 Beijing, Mon-Fri)
+  → Check if today is an A-share trading day (skips Chinese holidays)
+  → Run: python -m stock_agents report-and-notify
+    → Analyze all watchlist stocks (5-phase pipeline)
+    → Save markdown reports to reports/
+    → Commit reports to repo
+    → Send notification (Email / Telegram / 企业微信)
+```
+
+### Setup
+
+1. **Add secrets** in your GitHub repo → Settings → Secrets and Variables → Actions:
+
+   | Secret | Required | Description |
+   |--------|----------|-------------|
+   | `AZURE_OPENAI_API_KEY` | ✅ | Azure OpenAI API key |
+   | `AZURE_OPENAI_ENDPOINT` | ✅ | Azure OpenAI endpoint URL |
+   | `GH_MODELS_TOKEN` | If using GitHub Models | OAuth token from `copilot-login` or fine-grained PAT |
+   | `EMAIL_FROM` | Optional | Sender email address |
+   | `EMAIL_PASSWORD` | Optional | SMTP app-password (Gmail: use App Passwords) |
+   | `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token from @BotFather |
+   | `TELEGRAM_CHAT_ID` | Optional | Your Telegram chat/group ID |
+   | `WECHAT_WEBHOOK_URL` | Optional | 企业微信群机器人 webhook URL |
+
+2. **Enable notifications** in `config.yaml`:
+
+   ```yaml
+   schedule:
+     skip_holidays: true
+     notification:
+       telegram:
+         enabled: true
+       # or email / wechat — see config.yaml for all options
+   ```
+
+3. **Push to GitHub** — the workflow file `.github/workflows/premarket-report.yml` handles everything.
+
+4. **Manual trigger**: Go to Actions tab → "Premarket Analysis Report" → "Run workflow".
+
+### Local cron (alternative)
+
+If you prefer running locally instead of GitHub Actions:
+
+```bash
+# macOS/Linux — add to crontab -e
+0 8 * * 1-5 cd /path/to/GenAI && python -m stock_agents report-and-notify >> logs/cron.log 2>&1
+```
+
+---
+
+## Portfolio Tracking
+
+`portfolio.csv` is the source of truth for your holdings. All agents receive portfolio context so their recommendations account for your actual situation (existing positions, avg cost, drawdown, available cash).
+
+### File format
+
+```csv
+date,action,symbol,name,shares,price,commission,note
+2026-04-08,init_cash,,,,,55351.10,初始资金
+2026-04-08,buy,603993,洛阳钼业,1100,17.956,5.00,建仓
+2026-04-10,buy,600711,盛屯矿业,700,14.150,3.50,加仓
+2026-04-11,sell,603993,洛阳钼业,300,18.500,2.00,减仓
+```
+
+### Actions
+
+| action | Description |
+|--------|-------------|
+| `init_cash` | Set initial capital (amount goes in `commission` column) |
+| `buy` | Purchase shares |
+| `sell` | Sell shares |
+| `adjust_cash` | Manual adjustment (dividends, fees, transfers) |
+
+### Context provided to agents
+
+Every agent receives:
+- Available cash and total portfolio value
+- All open positions: symbol, shares, avg cost, current price, unrealized P&L
+- Full trade history
+- Current portfolio drawdown vs configured limit
+
+---
+
+## Configuration
+
+All settings in `config.yaml`. Override via `.env` or environment variables.
+
+```yaml
+llm:
+  provider: "github_models"         # LLM backend (github_models recommended)
+  model: "gpt-5.4-mini"             # Model for analyst agents (Phases 2-4)
+  model_final: "gpt-5.4"            # Model for FundManager (Phase 5)
+  max_tokens: 4096
+  temperature: 0.3
+  fallback: "ollama"                # Fallback provider on primary failure
+
+ollama:
+  model: "gemma4"
+  endpoint: "http://localhost:11434/v1"
+
+watchlist:
+  - "600711"
+  - "601012"
+  - "603993"
+
+analysis:
+  lookback_days: 250               # Price history window
+  financial_quarters: 8           # Earnings history depth
+  news_count: 20
+
+risk:
+  max_single_position_pct: 0.25   # 25% max per position
+  max_sector_pct: 0.40            # 40% max per sector
+  max_drawdown_pct: 0.15          # 15% drawdown triggers risk veto
+  total_capital: 75103            # Auto-calculated from portfolio.csv
+
+cache:
+  enabled: true
+  ttl_seconds: 900                # 15-minute TTL for market data
+  directory: ".cache"
+
+output:
+  save_to_file: true
+  output_directory: "reports"     # Reports saved to reports/YYYY-MM-DD/
+
+schedule:
+  notification:
+    email:
+      enabled: true
+      smtp_server: "smtp.163.com"
+      smtp_port: 465
+      from_addr_env: "your@163.com"
+      password_env: "EMAIL_PASSWORD"   # Environment variable name
+      to_addr:                         # Single address or list
+        - "recipient1@example.com"
+        - "recipient2@example.com"
+```
+
+---
 
 ## Project Structure
 
 ```
 stock_agents/
-├── __main__.py          # Entry point: python -m stock_agents
-├── cli.py               # CLI with argparse + Rich terminal output
-├── orchestrator.py      # 5-phase pipeline orchestrator
-├── config.yaml          # Main configuration
-├── portfolio.csv        # Trade log (your holdings)
+├── __main__.py              # Entry point
+├── cli.py                   # CLI commands + Rich console output
+├── orchestrator.py          # Single-team 5-phase pipeline (+ Phase 0/0.5)
+├── multi_horizon.py         # Three-horizon orchestrator (SHORT/MID/LONG)
+├── mcp_server.py            # MCP server for GitHub Copilot integration
+├── config.yaml              # Main configuration
+├── portfolio.csv            # Your trade log (source of truth for holdings)
 │
-├── agents/              # 8 AI analyst agents
-│   ├── base.py          # BaseAgent ABC
-│   ├── fundamental_analyst.py
-│   ├── technical_analyst.py
-│   ├── sentiment_analyst.py
-│   ├── research_bull.py
-│   ├── research_bear.py
-│   ├── quant_trader.py
-│   ├── risk_manager.py
-│   └── fund_manager.py
+├── .github/workflows/
+│   └── premarket-report.yml # GitHub Actions: daily premarket analysis
 │
-├── llm/                 # LLM client backends
-│   ├── __init__.py      # LLMClient Protocol + re-exports
-│   ├── claude_client.py # Anthropic Claude API
-│   ├── github_models_client.py  # GitHub Models (GPT-4o, Claude via Azure)
-│   ├── ollama_client.py # Local Ollama fallback
-│   └── fallback_client.py  # Auto-fallback wrapper
+├── agents/                  # 8 AI analyst agents
+│   ├── base.py              # BaseAgent ABC: gather_data() + analyze()
+│   ├── fundamental_analyst.py   # Philosophy: Ben Graham + Jim Simons
+│   ├── technical_analyst.py     # Philosophy: Jim Simons (Renaissance)
+│   ├── sentiment_analyst.py     # Philosophy: Ray Dalio (two-stage news flow)
+│   ├── research_bull.py         # Philosophy: Cliff Asness (AQR)
+│   ├── research_bear.py         # Philosophy: Nassim Taleb
+│   ├── quant_trader.py          # Philosophy: Jim Simons (Kelly sizing)
+│   ├── risk_manager.py          # Philosophy: Taleb + Markowitz (veto power)
+│   └── fund_manager.py          # Philosophy: Wooldridge MAS (synthesis)
 │
-├── config/              # Configuration
-│   ├── settings.py      # Pydantic settings (YAML + .env)
-│   └── prompts.py       # System prompts for all 8 agents
+├── config/
+│   ├── settings.py          # Pydantic settings model (YAML + .env)
+│   ├── prompts.py           # System prompts + METRICS_GLOSSARY + prediction philosophy
+│   └── horizons.py          # SHORT/MID/LONG HorizonConfig presets
 │
-├── data/                # Data acquisition
-│   ├── data_manager.py  # Unified data interface
-│   ├── akshare_client.py  # A-share market data (AKShare)
-│   ├── csv_portfolio.py # CSV-based portfolio tracker
-│   ├── cache.py         # File-based JSON cache (TTL)
-│   ├── futu_client.py   # Futu OpenD broker client
-│   └── ths_client.py    # THS file-based account reader
+├── indicators/
+│   ├── technical.py         # KDJ, RSI, MACD, Bollinger, SMA/EMA, ATR
+│   ├── risk_metrics.py      # Sharpe, Sortino, max drawdown, VaR, beta
+│   └── quant_engine.py      # Unified quant pipeline: Kelly, Graham, composite score
 │
-├── models/              # Pydantic data models
-│   ├── market_data.py   # OHLCVBar, StockSnapshot, FinancialData, TechnicalIndicators
-│   ├── portfolio.py     # Position, PortfolioState, RiskMetrics
-│   └── signals.py       # AgentReport, DebateReport, FinalDecision
+├── llm/
+│   ├── __init__.py          # LLMClient Protocol (duck-typed interface)
+│   ├── schema_builder.py    # Shared JSON schema instruction builder
+│   ├── copilot_auth.py      # GitHub Copilot Pro OAuth device flow
+│   ├── github_models_client.py  # GitHub Copilot Pro API (full model catalog)
+│   ├── azure_openai_client.py   # Azure OpenAI + HP UID OAuth + cert handling
+│   ├── claude_client.py         # Anthropic Claude
+│   ├── ollama_client.py         # Local Ollama (OpenAI-compatible)
+│   ├── openrouter_client.py     # OpenRouter
+│   └── fallback_client.py       # Rate-limit-aware auto-fallback wrapper
 │
-├── indicators/          # Quantitative computation
-│   ├── technical.py     # KDJ, RSI, MACD, Bollinger, SMA/EMA, ATR
-│   └── risk_metrics.py  # Sharpe, Sortino, max drawdown, VaR, beta
+├── data/
+│   ├── data_manager.py      # Unified data interface (all agents call this)
+│   ├── akshare_client.py    # A-share market data via AKShare
+│   ├── market_context.py    # Macro context: indices, forex, intl news, sectors
+│   ├── news_curator.py      # AI news curation (LLM-filtered digest)
+│   ├── csv_portfolio.py     # Trade log reader + portfolio state calculator
+│   ├── cache.py             # File-based JSON cache with TTL
+│   └── trading_calendar.py  # A-share trading day detection (holidays)
 │
-├── output/              # Reporting
-│   ├── report_generator.py  # Full Markdown analysis reports
-│   ├── formatters.py    # Rich console output
-│   └── copilot_plan.py  # Pre-trading action plans
+├── models/
+│   ├── market_data.py       # OHLCVBar, StockSnapshot, FinancialData, TechnicalIndicators
+│   ├── portfolio.py         # Position, PortfolioState, RiskMetrics
+│   └── signals.py           # AgentReport, DebateReport, FinalDecision, MultiHorizonDecision
 │
-├── compliance/          # Audit trail
-│   └── logger.py        # JSONL compliance logs
+├── output/
+│   ├── formatters.py        # Rich console tables (single + multi-horizon display)
+│   ├── report_generator.py  # Full Markdown report (fund manager decision first)
+│   ├── copilot_plan.py      # Pre-trading action plan generator
+│   └── notify.py            # Email notification (multi-recipient, raw data incl.)
 │
-├── tests/               # Test suite
-│   ├── test_data.py     # Market data + trading hours
-│   ├── test_portfolio.py  # CSV portfolio + trade history
-│   ├── test_indicators.py # Technical indicators + risk metrics
-│   ├── test_llm.py      # LLM client Protocol + fallback logic
-│   ├── test_config.py   # Settings + prompts
-│   └── test_agents.py   # Agent reports + report generation
+├── compliance/
+│   └── logger.py            # JSONL audit log — every decision persisted
 │
-├── reports/             # Generated .md analysis reports
-├── logs/                # Compliance JSONL logs
-└── .cache/              # Cached API responses (JSON, TTL-based)
+├── tests/
+│   ├── test_data.py         # Market data fetch, trading hours
+│   ├── test_portfolio.py    # CSV portfolio, trade history
+│   ├── test_indicators.py   # Technical indicators, risk metrics
+│   ├── test_llm.py          # LLM Protocol, fallback logic
+│   ├── test_config.py       # Settings loading, prompts
+│   ├── test_agents.py       # Agent output schema, report generation
+│   └── test_realtime_price.py  # Real-time price polling (10x, 10s interval)
+│
+├── reports/                 # Generated reports: reports/YYYY-MM-DD/ (gitignored)
+├── logs/                    # Compliance JSONL logs (gitignored)
+└── .cache/                  # Cached API responses (gitignored)
 ```
 
-## Quick Start
+---
 
-### Prerequisites
-- Python 3.11+
-- GitHub Token (for GitHub Models API) or Anthropic API key
-
-### Installation
+## Running Tests
 
 ```bash
-pip install -r requirements.txt
+cd stock_agents
+pytest tests/ -v                          # all tests
+pytest tests/ -v -k "not realtime"       # skip real-time price polling
+pytest tests/test_indicators.py -v       # quant engine + technical indicators
+pytest tests/test_portfolio.py -v        # portfolio tracking
 ```
 
-### Configuration
-
-1. Copy `.env.example` to `.env` and add your API key:
-```bash
-GITHUB_TOKEN=ghp_your_github_pat_here
-```
-
-2. Edit `config.yaml`:
-```yaml
-llm:
-  provider: github_models   # or "anthropic" or "ollama"
-  model: gpt-4o
-  model_final: gpt-4o
-  fallback: ollama           # auto-fallback to local Ollama on API errors
-
-watchlist:
-  - "603993"                 # Stock codes to analyze
-
-risk:
-  max_single_position_pct: 0.25
-  max_drawdown_pct: 0.15
-```
-
-3. Record your portfolio in `portfolio.csv`:
-```csv
-date,action,symbol,name,shares,price,commission,note
-2026-04-08,init_cash,,,,,55351.10,初始资金
-2026-04-08,buy,603993,洛阳钼业,1100,17.956,5.00,建仓
-```
-
-### Usage
-
-```bash
-# Analyze a single stock
-python -m stock_agents analyze 603993
-
-# Analyze entire watchlist
-python -m stock_agents watchlist
-
-# Generate pre-trading plan
-python -m stock_agents plan
-```
-
-### Running Tests
-
-```bash
-# All offline tests (no API/network needed)
-python -m pytest stock_agents/tests/ -v -k "not Ollama and not GitHub"
-
-# Including network tests (market data)
-python -m pytest stock_agents/tests/ -v
-
-# Specific module
-python -m pytest stock_agents/tests/test_indicators.py -v
-```
-
-## LLM Backend Options
-
-| Provider | Config | Notes |
-|----------|--------|-------|
-| **GitHub Models** | `provider: github_models` | Free with Copilot Pro, uses GPT-4o/Claude via Azure |
-| **Anthropic** | `provider: anthropic` | Direct Claude API, needs `ANTHROPIC_API_KEY` |
-| **Ollama** | `provider: ollama` | Local, free, slower. Default model: gemma3 |
-| **Fallback** | `fallback: ollama` | Auto-switches to Ollama after 3 consecutive cloud failures |
-
-## Report Output
-
-Each analysis generates a comprehensive Markdown report with:
-- Your current portfolio state (cash, holdings, P&L)
-- Each agent's complete analysis (reasoning, scores, key factors, risks)
-- Full agent raw data in expandable sections
-- Bull/Bear debate with scored theses
-- Fund Manager's step-by-step decision methodology
-- Position sizing recommendation with target price and stop loss
-
-Reports are saved to `reports/` directory.
-
-## Data Flow
-
-```
-portfolio.csv ──► DataManager ──► All 8 Agents (portfolio context)
-                      │
-AKShare API ────► DataManager ──► Phase 2 Agents (market data)
-                      │
-                  Indicators ──► Technical/Risk computation
-                      │
-                  Cache (.json) ◄── TTL-based (15min default)
-```
-
-Every agent receives the user's portfolio context (cash, positions, avg cost, trade history) so their analysis accounts for the user's actual situation.
+---
 
 ## Disclaimer
 
-This is an AI-powered analysis tool for educational and research purposes. All outputs are generated by LLM agents and should not be treated as financial advice. Always do your own research before making investment decisions.
+This is an AI-powered research tool for educational and research purposes. All outputs are generated by LLM agents interpreting market data and do **not** constitute financial advice. Past model recommendations do not guarantee future returns. Always conduct your own due diligence before making investment decisions.

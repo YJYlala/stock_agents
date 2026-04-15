@@ -82,16 +82,34 @@ def _render_data_section(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _render_agent(report: AgentReport) -> str:
-    """Render one agent's complete analysis."""
+# Keys that are shared across all agents and should only appear once in report
+_SHARED_DATA_KEYS = {
+    "market_context", "curated_news", "news", "portfolio",
+    "quant_signals", "prior_analyst_signals",
+}
+
+
+def _render_agent(report: AgentReport, compact: bool = True) -> str:
+    """Render one agent's complete analysis.
+
+    If compact=True, strips shared/duplicated data keys from raw data
+    (they are rendered once in a dedicated section instead).
+    """
     signal_icon = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(report.signal, "⚪")
 
     factors = "\n".join(f"- {f}" for f in report.key_factors) if report.key_factors else "N/A"
     risks = "\n".join(f"- {r}" for r in report.risks) if report.risks else "N/A"
 
+    # Strip shared data from per-agent raw data to avoid duplication
+    data = report.data_used
+    if compact and data:
+        data = {k: v for k, v in data.items() if k not in _SHARED_DATA_KEYS}
+
+    data_section = _render_data_section(data) if data else "> 无独立数据\n"
+
     return f"""## {signal_icon} {report.agent_name} ({report.agent_role})
 
-**信号: {report.signal} | 评分: {report.score:.1f}/10 | 置信度: {report.confidence:.0%}**
+**信号: {report.signal} | 评分: {_fmt_number(report.score, 1)}/10 | 置信度: {f'{report.confidence:.0%}' if report.confidence is not None else 'N/A'}**
 
 {report.reasoning}
 
@@ -102,9 +120,9 @@ def _render_agent(report: AgentReport) -> str:
 {risks}
 
 <details>
-<summary>原始数据（点击展开）</summary>
+<summary>📊 该代理独立数据</summary>
 
-{_render_data_section(report.data_used)}
+{data_section}
 
 </details>
 
@@ -166,67 +184,129 @@ def _render_portfolio_section(decision: FinalDecision) -> str:
     return "\n".join(lines)
 
 
+def _render_shared_data_section(agent_reports: list[AgentReport]) -> str:
+    """Extract shared data (market context, quant signals, etc.) from first agent and render once."""
+    if not agent_reports:
+        return ""
+
+    # Find the first agent that has data_used
+    source = None
+    for r in agent_reports:
+        if r.data_used:
+            source = r.data_used
+            break
+    if not source:
+        return ""
+
+    lines = []
+
+    # Market context (formatted text block)
+    mc = source.get("market_context")
+    if mc and isinstance(mc, str) and len(mc) > 20:
+        lines.append("## 📈 市场环境\n")
+        lines.append(mc)
+        lines.append("")
+
+    # Quant signals
+    qs = source.get("quant_signals")
+    if qs and isinstance(qs, dict):
+        lines.append("\n## 📐 量化信号\n")
+        lines.append(_render_data_section({"quant_signals": qs}))
+        lines.append("")
+
+    # Curated news
+    cn = source.get("curated_news")
+    if cn and isinstance(cn, dict):
+        lines.append("\n## 📰 AI新闻摘要\n")
+        if cn.get("init_summary"):
+            lines.append(f"> {cn['init_summary']}\n")
+        useful = cn.get("useful_news", [])
+        if useful:
+            lines.append("**精选新闻:**\n")
+            for i, n in enumerate(useful[:10], 1):
+                if isinstance(n, dict):
+                    lines.append(f"{i}. {n.get('title', n.get('content', str(n)))}")
+                else:
+                    lines.append(f"{i}. {n}")
+            lines.append("")
+        if cn.get("risk_flags"):
+            lines.append(f"**风险信号:** {', '.join(cn['risk_flags'])}\n")
+        if cn.get("sentiment_summary"):
+            lines.append(f"**情绪总结:** {cn['sentiment_summary']}\n")
+
+    # Company announcements
+    ann = source.get("announcements")
+    if ann and isinstance(ann, list) and len(ann) > 0:
+        lines.append("\n## 📋 公司公告\n")
+        for item in ann[:10]:
+            if isinstance(item, dict):
+                title = item.get("公告标题", item.get("title", ""))
+                date = item.get("公告日期", item.get("date", ""))
+                cat = item.get("公告类型", item.get("type", ""))
+                lines.append(f"- [{date}] {title}" + (f" ({cat})" if cat else ""))
+            else:
+                lines.append(f"- {item}")
+        lines.append("")
+
+    if not lines:
+        return ""
+
+    return "\n".join(lines) + "\n---\n\n"
+
+
 def generate_report(decision: FinalDecision) -> str:
-    """Generate a comprehensive Markdown report with all agent data."""
-    weighted_score = (
-        decision.fundamental_score * 0.40
-        + decision.technical_score * 0.30
-        + decision.sentiment_score * 0.30
-    )
+    """Generate a comprehensive Markdown report with fund manager decision FIRST."""
+    # Compute weighted score from available components
+    score_parts = []
+    weights_parts = []
+    f_score = decision.fundamental_score
+    t_score = decision.technical_score
+    s_score = decision.sentiment_score
+    if f_score is not None:
+        score_parts.append(f_score * 0.40)
+        weights_parts.append(0.40)
+    if t_score is not None:
+        score_parts.append(t_score * 0.30)
+        weights_parts.append(0.30)
+    if s_score is not None:
+        score_parts.append(s_score * 0.30)
+        weights_parts.append(0.30)
+    total_w = sum(weights_parts)
+    weighted_score = sum(score_parts) / total_w * 1.0 if total_w > 0 else None
 
     # ── Header
+    model_label = decision.llm_model or "未知模型"
     report = f"""# {decision.name} ({decision.symbol}) 分析报告
 
-> 生成时间: {decision.timestamp.strftime("%Y-%m-%d %H:%M")} | 模型: GPT-4o via GitHub Models
+> 生成时间: {decision.timestamp.strftime("%Y-%m-%d %H:%M")} | 模型: {model_label}
 
 ---
 
 """
 
-    # ── Portfolio section
-    report += _render_portfolio_section(decision)
+    # ── Fund Manager final decision (FIRST — most important)
+    conf_str = f"{decision.confidence:.0%}" if decision.confidence is not None else "N/A"
 
-    # ── Each agent's full analysis
-    seen = set()
-    for agent_report in decision.agent_reports:
-        key = (agent_report.agent_name, agent_report.symbol)
-        if key in seen:
-            continue
-        seen.add(key)
-        report += _render_agent(agent_report)
+    def _score_row(label, score, weight_pct):
+        if score is None:
+            return f"| {label} | N/A | {weight_pct}% | N/A |"
+        weighted = score * weight_pct / 100
+        return f"| {label} | {score:.1f}/10 | {weight_pct}% | {weighted:.2f} |"
 
-    # ── Bull vs Bear debate
-    if decision.debate_report:
-        d = decision.debate_report
-        report += f"""## 多空辩论
+    ws_str = f"{weighted_score:.2f}/10" if weighted_score is not None else "N/A"
 
-| 方向 | 评分 |
-|------|------|
-| 多头 | {d.bull_score:.1f}/10 |
-| 空头 | {d.bear_score:.1f}/10 |
-| 净信念 | {d.net_conviction:+.2f} |
+    report += f"""## 🎯 基金经理最终决策 (FundManager)
 
-**多头论点:** {d.bull_thesis}
-
-**空头论点:** {d.bear_thesis}
-
----
-
-"""
-
-    # ── Fund Manager final decision
-    report += f"""## 基金经理最终决策 (FundManager)
-
-### 决策: **{decision.action}** (置信度: {decision.confidence:.0%})
+### 决策: **{decision.action}** (置信度: {conf_str})
 
 ### 评分汇总
 
 | 维度 | 评分 | 权重 | 加权 |
 |------|------|------|------|
-| 基本面 | {decision.fundamental_score:.1f}/10 | 40% | {decision.fundamental_score * 0.40:.2f} |
-| 技术面 | {decision.technical_score:.1f}/10 | 30% | {decision.technical_score * 0.30:.2f} |
-| 情绪面 | {decision.sentiment_score:.1f}/10 | 30% | {decision.sentiment_score * 0.30:.2f} |
-| **综合** | **{weighted_score:.2f}/10** | | |
+{_score_row("基本面", f_score, 40)}
+{_score_row("技术面", t_score, 30)}
+{_score_row("情绪面", s_score, 30)}
+| **综合** | **{ws_str}** | | |
 
 """
 
@@ -273,8 +353,10 @@ def generate_report(decision: FinalDecision) -> str:
     report += f"| 当前价格 | {_fmt_number(decision.current_price)} |\n"
     report += f"| 目标价 | {_fmt_number(decision.target_price)} |\n"
     report += f"| 止损价 | {_fmt_number(decision.stop_loss)} |\n"
-    report += f"| 建议仓位 | {decision.position_size_pct:.1%} |\n"
-    report += f"| 建议股数 | {decision.position_size_shares} 股 ({decision.position_size_shares // 100} 手) |\n"
+    pct_str = f"{decision.position_size_pct:.1%}" if decision.position_size_pct is not None else "N/A"
+    shares = decision.position_size_shares or 0
+    report += f"| 建议仓位 | {pct_str} |\n"
+    report += f"| 建议股数 | {shares} 股 ({shares // 100} 手) |\n"
 
     if decision.target_price and decision.current_price:
         upside = (decision.target_price - decision.current_price) / decision.current_price * 100
@@ -283,15 +365,33 @@ def generate_report(decision: FinalDecision) -> str:
         downside = (decision.stop_loss - decision.current_price) / decision.current_price * 100
         report += f"| 下行风险 | {downside:+.1f}% |\n"
 
+    report += "\n---\n\n"
+
+    # ── Portfolio section
+    report += _render_portfolio_section(decision)
+
+    # ── Shared data (market context, quant signals, news) — rendered ONCE
+    report += _render_shared_data_section(decision.agent_reports)
+
+    # ── Each agent's analysis (compact: shared data stripped from raw data)
+    seen = set()
+    for agent_report in decision.agent_reports:
+        key = (agent_report.agent_name, agent_report.symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        report += _render_agent(agent_report)
+
     report += "\n---\n\n*AI多智能体系统生成，仅供参考，不构成投资建议。*\n"
     return report
 
 
 def save_report(decision: FinalDecision, output_dir: Path) -> Path:
-    """Save report to file."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{decision.symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
-    path = output_dir / filename
+    """Save report to date-based subfolder: output_dir/YYYY-MM-DD/symbol_HHMM.md"""
+    date_folder = output_dir / datetime.now().strftime("%Y-%m-%d")
+    date_folder.mkdir(parents=True, exist_ok=True)
+    filename = f"{decision.symbol}_{datetime.now().strftime('%H%M')}.md"
+    path = date_folder / filename
     content = generate_report(decision)
     path.write_text(content, encoding="utf-8")
     return path

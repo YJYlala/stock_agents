@@ -33,6 +33,9 @@ class TechnicalAnalyst(BaseAgent):
             "indicators": indicators.model_dump(),
             "recent_prices": recent_prices,
         }
+        # Include pre-computed technical signal classification
+        if context and "quant_signals" in context:
+            data["technical_signal"] = context["quant_signals"].get("technical_signal", {})
         if context and "portfolio" in context:
             portfolio = context["portfolio"]
             data["my_portfolio"] = {"cash": portfolio["cash"], "total_value": portfolio["total_value"]}
@@ -40,4 +43,6 @@ class TechnicalAnalyst(BaseAgent):
                 if pos["symbol"] == symbol:
                     data["my_position"] = pos
                     break
+        if context and "market_context" in context:
+            data["market_context"] = context["market_context"]
         return data

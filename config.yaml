@@ -1,30 +1,43 @@
 llm:
-  provider: "openrouter"          # anthropic / github_models / ollama / openrouter
-  model: "gpt-4o"
-  model_final: "gpt-4o"
+  provider: "github_models"          # anthropic / github_models / azure_openai / ollama / openrouter
+  model: "gpt-5.4-mini"             # default model for all agents
+  model_final: "gpt-5.4"            # strongest model for fund manager final decisions
   max_tokens: 4096
   temperature: 0.3
-  api_key_env: "GITHUB_TOKEN"     # used by github_models / anthropic
-  endpoint: "https://models.inference.ai.azure.com"
-  fallback: "ollama"              # ollama / none — auto-fallback when primary fails
+  fallback: "ollama"                 # ollama / none — auto-fallback when primary fails
+  # Per-agent model overrides (optional).
+  # Agents not listed here use the default `model` above.
+  # Valid keys: fundamental, technical, sentiment, bull, bear, quant, risk, fund_manager
+  agent_models:
+    fundamental: "gpt-5.4"
+    technical: "gpt-5.4"
+    sentiment: "gpt-5.4"
+    bull: "gpt-5.4-mini"
+    bear: "gpt-5.4-mini"
+    quant: "gpt-5.4-mini"
+    risk: "gpt-5.4-mini"
+    fund_manager: "gpt-5.4"          # strongest model for final decisions
 
 openrouter:
   model: "openai/gpt-oss-120b:free"
   api_key_env: "OPENROUTER_API_KEY"
   endpoint: "https://openrouter.ai/api/v1"
-  max_tokens: 4096
+  max_tokens: 128000
   temperature: 0.3
 
 ollama:
   model: "gemma4"              # best local model for financial analysis
   endpoint: "http://localhost:11434/v1"
-  max_tokens: 4096
+  max_tokens: 128000
   temperature: 0.3
 
 watchlist:
   - "600711"  # 盛屯矿业
   - "601012"  # 隆基绿能
   - "603993"  # 洛阳钼业
+  # - "000762"  # 西藏矿业
+  - "002240"  # 盛新锂能
+  # - "001203"  # 大中矿业
 
 analysis:
   lookback_days: 250
@@ -49,3 +62,24 @@ output:
   format: "markdown"
   save_to_file: true
   output_directory: "reports"
+
+# ── Scheduled reports & notifications ──────────────────────────────────
+schedule:
+  skip_holidays: true              # skip Chinese market holidays (uses AKShare calendar)
+  notification:
+    email:
+      enabled: true
+      smtp_server: "smtp.163.com"
+      smtp_port: 465
+      from_addr_env: "yjy1073260217@163.com"        # env var: 163邮箱地址
+      password_env: "EMAIL_PASSWORD"     # env var: 163邮箱SMTP授权码
+      to_addr:
+        - "yjy1073260217@163.com"
+        - "xiyan19951229@gmail.com"
+    telegram:
+      enabled: false
+      bot_token_env: "TELEGRAM_BOT_TOKEN"
+      chat_id_env: "TELEGRAM_CHAT_ID"
+    wechat:
+      enabled: false
+      webhook_url_env: "WECHAT_WEBHOOK_URL"  # 企业微信群机器人 webhook
