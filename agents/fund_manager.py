@@ -4,7 +4,7 @@ import json
 import logging
 
 from stock_agents.llm import LLMClient
-from stock_agents.llm.schema_builder import strip_markdown_fences
+from stock_agents.llm import strip_markdown_fences
 from stock_agents.config.prompts import FUND_MANAGER
 from stock_agents.data.data_manager import DataManager
 from stock_agents.models.signals import AgentReport, DebateReport, FinalDecision

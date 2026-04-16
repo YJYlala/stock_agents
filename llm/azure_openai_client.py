@@ -24,7 +24,7 @@ import ssl
 import time
 import urllib.request
 
-from stock_agents.llm.base_client import BaseLLMClient
+from genai_common.llm.base_client import BaseLLMClient
 
 logger = logging.getLogger(__name__)
 
