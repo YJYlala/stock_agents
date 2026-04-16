@@ -31,21 +31,14 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        env:
-          # Fine-grained PAT with Contents:Read on genai-common repo
-          # Required to pip install private genai-common dependency
-          GIT_AUTH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           pip install --upgrade pip
-          # Configure git to authenticate when cloning private genai-common
-          git config --global url."https://x-access-token:${GIT_AUTH_TOKEN}@github.com/".insteadOf "https://github.com/"
           pip install -r requirements.txt
 
       - name: Run premarket analysis
         env:
-          # GitHub Copilot Pro token for LLM calls
-          # Use a fine-grained PAT (github_pat_*) with "Copilot Requests" permission
-          # Or an OAuth token (gho_*) from `copilot-login`
+          # GitHub Copilot Pro OAuth token (gho_*) for LLM API calls
+          # Stored in repo Settings → Secrets → Actions
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           # Email notification credentials
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
