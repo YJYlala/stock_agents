@@ -31,22 +31,25 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
+        env:
+          # Fine-grained PAT with Contents:Read on genai-common repo
+          # Required to pip install private genai-common dependency
+          GIT_AUTH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           pip install --upgrade pip
+          # Configure git to authenticate when cloning private genai-common
+          git config --global url."https://x-access-token:${GIT_AUTH_TOKEN}@github.com/".insteadOf "https://github.com/"
           pip install -r requirements.txt
 
       - name: Run premarket analysis
         env:
-          # LLM provider credentials (set these in repo Settings → Secrets)
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          GITHUB_TOKEN: ${{ secrets.GH_MODELS_TOKEN }}
-          # Notification credentials (optional — enable in config.yaml)
+          # GitHub Copilot Pro token for LLM calls
+          # Use a fine-grained PAT (github_pat_*) with "Copilot Requests" permission
+          # Or an OAuth token (gho_*) from `copilot-login`
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          # Email notification credentials
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
         run: |
           FORCE_FLAG=""
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
@@ -59,7 +62,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add reports/
-          # Only commit if there are new reports
           if git diff --cached --quiet; then
             echo "No new reports to commit"
           else
