@@ -463,7 +463,7 @@ def cmd_report_and_notify(args, settings):
 
 def cmd_copilot_login(args, settings):
     """Authenticate with GitHub Copilot via OAuth device code flow."""
-    from stock_agents.llm.github_models_client import (
+    from genai_common.llm.github_models_client import (
         copilot_device_code_login, _resolve_github_token,
         fetch_copilot_model_catalog, _is_classic_pat,
     )
@@ -505,7 +505,7 @@ def cmd_copilot_login(args, settings):
 
 def cmd_copilot_models(args, settings):
     """List models available under your GitHub Copilot Pro subscription."""
-    from stock_agents.llm.github_models_client import list_copilot_models
+    from genai_common.llm.github_models_client import list_copilot_models
 
     console.print("[dim]Fetching model catalog from Copilot API...[/]")
     models = list_copilot_models()
