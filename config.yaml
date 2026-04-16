@@ -43,6 +43,7 @@ analysis:
   lookback_days: 250
   financial_quarters: 8
   news_count: 20
+  max_concurrency: 2              # stocks analyzed in parallel (2 = safe for API rate limits)
 
 risk:
   max_single_position_pct: 0.25

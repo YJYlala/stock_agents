@@ -385,16 +385,27 @@ class TradingOrchestrator:
         return asyncio.run(self.analyze_stock_async(symbol))
 
     async def analyze_watchlist_async(self) -> list[FinalDecision]:
-        """Analyze all stocks — each stock runs its phases in parallel internally."""
-        decisions = []
-        for symbol in self.settings.watchlist:
-            try:
-                decision = await self.analyze_stock_async(symbol)
-                decisions.append(decision)
-            except Exception as e:
-                logger.error("Failed to analyze %s: %s", symbol, e)
-                # Skip this symbol — do not append a fake default decision
-        return decisions
+        """Analyze all stocks concurrently (bounded by max_concurrency)."""
+        max_conc = self.settings.analysis.max_concurrency
+        symbols = self.settings.watchlist
+
+        # Pre-warm market context once before parallel runs to avoid thundering herd
+        logger.info("Pre-fetching market context for %d stocks (concurrency=%d)...",
+                     len(symbols), max_conc)
+        await asyncio.to_thread(self.market_context.get_context)
+
+        semaphore = asyncio.Semaphore(max_conc)
+
+        async def _bounded_analyze(symbol: str) -> FinalDecision | None:
+            async with semaphore:
+                try:
+                    return await self.analyze_stock_async(symbol)
+                except Exception as e:
+                    logger.error("Failed to analyze %s: %s", symbol, e)
+                    return None
+
+        results = await asyncio.gather(*[_bounded_analyze(s) for s in symbols])
+        return [d for d in results if d is not None]
 
     def analyze_watchlist(self) -> list[FinalDecision]:
         """Sync wrapper around analyze_watchlist_async."""

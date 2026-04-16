@@ -70,6 +70,7 @@ class AnalysisConfig(BaseModel):
     lookback_days: int = 250
     financial_quarters: int = 8
     news_count: int = 20
+    max_concurrency: int = 2  # max stocks analyzed in parallel (limit to avoid API rate limits)
 
 
 class RiskConfig(BaseModel):
