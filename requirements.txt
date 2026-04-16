@@ -7,7 +7,7 @@ pyyaml>=6.0.2
 python-dotenv>=1.0.1
 
 # Account automation
-easytrader>=0.24.0
+easytrader>=0.23.0
 
 # Data
 akshare>=1.15.0
