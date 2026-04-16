@@ -23,24 +23,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          path: stock_agents
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
+          cache-dependency-path: stock_agents/requirements.txt
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r stock_agents/requirements.txt
 
       - name: Run premarket analysis
         env:
-          # GitHub Copilot Pro OAuth token (gho_*) for LLM API calls
-          # Stored in repo Settings → Secrets → Actions
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          # Email notification credentials
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: |
@@ -51,6 +51,7 @@ jobs:
           python -m stock_agents report-and-notify $FORCE_FLAG
 
       - name: Commit reports
+        working-directory: stock_agents
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -69,5 +70,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: premarket-reports-${{ github.run_number }}
-          path: reports/
+          path: stock_agents/reports/
           retention-days: 30
