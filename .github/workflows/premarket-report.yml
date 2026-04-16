@@ -51,6 +51,7 @@ jobs:
           python -m stock_agents report-and-notify $FORCE_FLAG
 
       - name: Commit reports
+        continue-on-error: true
         working-directory: stock_agents
         run: |
           git config user.name "github-actions[bot]"
